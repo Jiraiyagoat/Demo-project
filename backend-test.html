@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Student Hub Backend Test</title>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 760px;
+      margin: 40px auto;
+      padding: 0 20px;
+      background: #111;
+      color: #eee;
+    }
+
+    section {
+      padding: 20px;
+      margin-bottom: 20px;
+      background: #1c1c1c;
+      border-radius: 12px;
+    }
+
+    input {
+      display: block;
+      width: 100%;
+      box-sizing: border-box;
+      padding: 10px;
+      margin: 8px 0;
+    }
+
+    button {
+      padding: 10px 14px;
+      margin: 6px 4px 6px 0;
+      cursor: pointer;
+    }
+
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #000;
+      padding: 16px;
+      border-radius: 8px;
+      min-height: 100px;
+    }
+  </style>
+</head>
+
+<body>
+
+  <h1>Student Hub Backend Test</h1>
+  <p>This temporary page tests Appwrite authentication and database access.</p>
+
+  <section>
+    <h2>1. Create account</h2>
+
+    <input id="signupName" placeholder="Name" />
+    <input id="signupEmail" type="email" placeholder="Email" />
+    <input id="signupPassword" type="password" placeholder="Password (8+ characters)" />
+
+    <button onclick="signup()">Create account</button>
+  </section>
+
+  <section>
+    <h2>2. Login</h2>
+
+    <input id="loginEmail" type="email" placeholder="Email" />
+    <input id="loginPassword" type="password" placeholder="Password" />
+
+    <button onclick="login()">Login</button>
+    <button onclick="whoAmI()">Who am I?</button>
+    <button onclick="logout()">Logout</button>
+  </section>
+
+  <section>
+    <h2>3. Semester database</h2>
+
+    <button onclick="createSemester()">Create Fall 2026</button>
+    <button onclick="loadSemesters()">Load my semesters</button>
+  </section>
+
+  <h2>Output</h2>
+  <pre id="output">Waiting for action...</pre>
+
+  <script src="https://cdn.jsdelivr.net/npm/appwrite@17.0.0"></script>
+  <script src="appwrite.js"></script>
+
+  <script>
+    const { account, tablesDB } = window.studentHubBackend;
+
+    const DATABASE_ID = "student_hub";
+    const SEMESTERS_TABLE_ID = "semesters";
+
+    function show(value) {
+      document.getElementById("output").textContent =
+        typeof value === "string"
+          ? value
+          : JSON.stringify(value, null, 2);
+    }
+
+    function showError(error) {
+      console.error(error);
+
+      show({
+        message: error.message,
+        code: error.code,
+        type: error.type
+      });
+    }
+
+    async function signup() {
+      try {
+        const name = document.getElementById("signupName").value.trim();
+        const email = document.getElementById("signupEmail").value.trim();
+        const password = document.getElementById("signupPassword").value;
+
+        const result = await account.create({
+          userId: Appwrite.ID.unique(),
+          email,
+          password,
+          name
+        });
+
+        show({
+          success: true,
+          message: "Account created. Now log in.",
+          user: result
+        });
+
+      } catch (error) {
+        showError(error);
+      }
+    }
+
+    async function login() {
+      try {
+        const email = document.getElementById("loginEmail").value.trim();
+        const password = document.getElementById("loginPassword").value;
+
+        const session = await account.createEmailPasswordSession({
+          email,
+          password
+        });
+
+        show({
+          success: true,
+          message: "Logged in.",
+          session
+        });
+
+      } catch (error) {
+        showError(error);
+      }
+    }
+
+    async function whoAmI() {
+      try {
+        const user = await account.get();
+
+        show({
+          success: true,
+          user
+        });
+
+      } catch (error) {
+        showError(error);
+      }
+    }
+
+    async function logout() {
+      try {
+        await account.deleteSession({
+          sessionId: "current"
+        });
+
+        show("Logged out successfully.");
+
+      } catch (error) {
+        showError(error);
+      }
+    }
+
+    async function createSemester() {
+      try {
+        const user = await account.get();
+
+        const semester = await tablesDB.createRow({
+          databaseId: DATABASE_ID,
+          tableId: SEMESTERS_TABLE_ID,
+          rowId: Appwrite.ID.unique(),
+
+          data: {
+            userId: user.$id,
+            name: "Fall 2026",
+            startDate: "2026-09-01T00:00:00.000Z",
+            endDate: "2026-12-20T00:00:00.000Z",
+            isActive: true
+          }
+        });
+
+        show({
+          success: true,
+          message: "Semester created.",
+          semester
+        });
+
+      } catch (error) {
+        showError(error);
+      }
+    }
+
+    async function loadSemesters() {
+      try {
+        const result = await tablesDB.listRows({
+          databaseId: DATABASE_ID,
+          tableId: SEMESTERS_TABLE_ID
+        });
+
+        show({
+          success: true,
+          count: result.total,
+          semesters: result.rows
+        });
+
+      } catch (error) {
+        showError(error);
+      }
+    }
+  </script>
+
+</body>
+</html>

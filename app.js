@@ -1,6 +1,7 @@
 (() => {
   const DAY = 86400000;
-  const STORAGE_KEY = 'studentHubDemo.v1';
+  const BASE_STORAGE_KEY = 'studentHubDemo.v1';
+  let activeStorageKey = BASE_STORAGE_KEY;
   const qs = (s, el=document) => el.querySelector(s);
   const qsa = (s, el=document) => [...el.querySelectorAll(s)];
   const uid = (prefix='id') => `${prefix}_${Math.random().toString(36).slice(2,9)}`;
@@ -70,8 +71,8 @@
     };
   }
 
-  function loadState(){
-    try { const raw=localStorage.getItem(STORAGE_KEY); if(raw){ const parsed=JSON.parse(raw); if(parsed.version===1) return parsed; } } catch(e){}
+  function loadState(key=activeStorageKey){
+    try { const raw=localStorage.getItem(key); if(raw){ const parsed=JSON.parse(raw); if(parsed.version===1) return parsed; } } catch(e){}
     return seedState();
   }
   let state = loadState();
@@ -81,7 +82,7 @@
   let syllabusParsed = [];
   let timerHandle = null;
 
-  function save(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); updateBadges(); }
+  function save(){ localStorage.setItem(activeStorageKey, JSON.stringify(state)); updateBadges(); }
   function course(id){ return state.courses.find(c=>c.id===id); }
   function assessment(id){ return state.assessments.find(a=>a.id===id); }
   function courseName(id){ return course(id)?.name || 'Unassigned'; }
@@ -240,7 +241,7 @@
   }
 
   function renderSettings(){
-    return `<div class="settings-grid"><article class="card setting-card"><h3>Weekly study capacity</h3><p>The workload engine compares estimated required work with the time you realistically have.</p><label class="eyebrow" for="capacityInput">Hours / week</label><input id="capacityInput" type="number" min="1" max="80" step=".5" value="${state.semester.availableMinutesPerWeek/60}" style="width:100%;margin-top:7px"/></article><article class="card setting-card"><h3>Demo data</h3><p>Reset the browser prototype back to the original sample semester.</p><button class="btn danger" id="resetDemo">Reset demo data</button></article><article class="card setting-card"><h3>Offline-first prototype</h3><p>This demo stores everything in localStorage and includes a service worker. Nothing leaves this browser.</p><span class="pill success">No API keys</span></article><article class="card setting-card"><h3>Production next step</h3><p>Replace browser-only storage with auth + database + file storage while keeping the same domain model.</p><button class="btn secondary" data-route-jump="courses">Test syllabus import</button></article></div>`;
+    return `<div class="settings-grid"><article class="card setting-card"><h3>Weekly study capacity</h3><p>The workload engine compares estimated required work with the time you realistically have.</p><label class="eyebrow" for="capacityInput">Hours / week</label><input id="capacityInput" type="number" min="1" max="80" step=".5" value="${state.semester.availableMinutesPerWeek/60}" style="width:100%;margin-top:7px"/></article><article class="card setting-card"><h3>Demo data</h3><p>Reset the browser prototype back to the original sample semester.</p><button class="btn danger" id="resetDemo">Reset demo data</button></article><article class="card setting-card"><h3>Cloud account</h3><p>Authentication and semester metadata now use Appwrite. Course, assessment, planner, and study demo data will move to cloud tables in the next migration.</p><span class="pill success">Auth + semester cloud</span></article><article class="card setting-card"><h3>Next backend step</h3><p>Move Courses and Assessments into Appwrite so Today and Planner can become fully multi-device.</p><button class="btn secondary" data-route-jump="courses">Review course data</button></article></div>`;
   }
 
   function bindPageEvents(){
@@ -340,6 +341,35 @@
   function timeAgo(date){ const m=Math.max(0,Math.round((Date.now()-new Date(date))/60000)); if(m<1)return 'just now'; if(m<60)return `${m}m ago`;const h=Math.floor(m/60);if(h<24)return `${h}h ago`;return `${Math.floor(h/24)}d ago`; }
   function toast(msg){ const el=document.createElement('div');el.className='toast';el.textContent=msg;qs('#toastStack').appendChild(el);setTimeout(()=>el.remove(),3200); }
   function updateBadges(){ const n=state.inbox.filter(i=>!i.processed).length; const b=qs('#inboxBadge'); if(!b)return;b.textContent=n;b.classList.toggle('visible',n>0); }
+
+  function setUserContext(userId, semesterName='') {
+    if (!userId) return;
+    const nextKey = `${BASE_STORAGE_KEY}.${userId}`;
+    if (activeStorageKey !== nextKey) {
+      if (!localStorage.getItem(nextKey)) {
+        const existing = localStorage.getItem(BASE_STORAGE_KEY);
+        if (existing) localStorage.setItem(nextKey, existing);
+      }
+      activeStorageKey = nextKey;
+      state = loadState(activeStorageKey);
+    }
+    if (semesterName) state.semester.name = semesterName;
+    save();
+    render();
+  }
+
+  function resetUserContext() {
+    stopTimer();
+    activeStorageKey = BASE_STORAGE_KEY;
+    state = loadState(activeStorageKey);
+  }
+
+  window.studentHubApp = Object.freeze({
+    setUserContext,
+    resetUserContext,
+    render,
+    toast
+  });
 
   qsa('[data-route]').forEach(b=>b.addEventListener('click',()=>setRoute(b.dataset.route)));
   qs('#themeToggle').addEventListener('click',()=>{state.theme=state.theme==='dark'?'light':'dark';save();render();});

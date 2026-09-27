@@ -5,12 +5,124 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#0d1117" />
   <meta name="description" content="Student Hub — a connected academic operating system demo." />
-  <title>Student Hub — Demo</title>
+  <title>Student Hub</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="stylesheet" href="styles.css" />
 </head>
-<body>
-  <div class="app-shell">
+<body class="auth-open">
+  <section id="authLoading" class="auth-loading-screen" aria-live="polite">
+    <div class="auth-loading-mark">S</div>
+    <strong>Connecting Student Hub…</strong>
+    <span>Checking your Appwrite session</span>
+  </section>
+
+  <section id="authGate" class="auth-gate hidden" aria-labelledby="authTitle">
+    <div class="auth-orb auth-orb-one"></div>
+    <div class="auth-orb auth-orb-two"></div>
+
+    <div class="auth-layout">
+      <article class="auth-story">
+        <div class="auth-brand-row">
+          <span class="brand-mark">S</span>
+          <span class="brand-copy"><strong>Student Hub</strong><small>Academic OS</small></span>
+        </div>
+
+        <div class="auth-story-copy">
+          <span class="eyebrow">Your semester, connected</span>
+          <h1 id="authTitle">Turn academic information into a plan.</h1>
+          <p>Courses, deadlines, study blocks, learning material, and progress belong to one connected system.</p>
+        </div>
+
+        <div class="auth-feature-list" aria-label="Student Hub features">
+          <div class="auth-feature"><span>01</span><div><strong>Know what matters now</strong><small>Today turns deadlines and workload into a next action.</small></div></div>
+          <div class="auth-feature"><span>02</span><div><strong>Plan the actual work</strong><small>Deadlines stay separate from the time you schedule to complete them.</small></div></div>
+          <div class="auth-feature"><span>03</span><div><strong>Study in context</strong><small>Courses, topics, resources, and practice stay connected.</small></div></div>
+        </div>
+
+        <p class="auth-security-note">Authentication and password storage are handled by Appwrite. Your password is never stored in this website's local data.</p>
+      </article>
+
+      <article class="auth-card">
+        <div class="auth-tabs" role="tablist" aria-label="Account action">
+          <button type="button" class="active" data-auth-mode="signin" role="tab" aria-selected="true">Sign in</button>
+          <button type="button" data-auth-mode="signup" role="tab" aria-selected="false">Create account</button>
+        </div>
+
+        <div id="authMessage" class="auth-message" role="status" aria-live="polite"></div>
+
+        <form id="signinForm" class="auth-form" novalidate>
+          <div class="auth-form-heading">
+            <span class="eyebrow">Welcome back</span>
+            <h2>Continue your semester</h2>
+            <p>Use the account connected to your Student Hub workspace.</p>
+          </div>
+
+          <label class="auth-field">
+            <span>Email</span>
+            <input id="signinEmail" type="email" autocomplete="email" required placeholder="you@example.com" />
+          </label>
+
+          <label class="auth-field">
+            <span>Password</span>
+            <input id="signinPassword" type="password" autocomplete="current-password" required placeholder="Your password" />
+          </label>
+
+          <button id="signinSubmit" class="btn primary auth-submit" type="submit">Sign in</button>
+          <p class="auth-switch-copy">New to Student Hub? <button type="button" class="text-link" data-auth-mode="signup">Create an account</button></p>
+        </form>
+
+        <form id="signupForm" class="auth-form hidden" novalidate>
+          <div class="auth-form-heading">
+            <span class="eyebrow">Create your workspace</span>
+            <h2>Start with one secure account</h2>
+            <p>Your first cloud semester will be created automatically.</p>
+          </div>
+
+          <label class="auth-field">
+            <span>Name</span>
+            <input id="signupName" type="text" autocomplete="name" minlength="2" required placeholder="Your name" />
+          </label>
+
+          <label class="auth-field">
+            <span>Email</span>
+            <input id="signupEmail" type="email" autocomplete="email" required placeholder="you@example.com" />
+          </label>
+
+          <label class="auth-field">
+            <span>Password</span>
+            <input id="signupPassword" type="password" autocomplete="new-password" required placeholder="Create a strong password" aria-describedby="passwordRequirements" />
+          </label>
+
+          <div class="password-strength" id="passwordRequirements">
+            <div class="password-meter-row">
+              <div class="password-meter" id="passwordMeter" data-level="0" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+              <strong id="passwordStrengthLabel">Enter a password</strong>
+            </div>
+            <ul class="password-checks">
+              <li data-password-check="length">At least 12 characters</li>
+              <li data-password-check="lower">A lowercase letter</li>
+              <li data-password-check="upper">An uppercase letter</li>
+              <li data-password-check="number">A number</li>
+              <li data-password-check="special">A special character</li>
+              <li data-password-check="personal">Does not contain your name or email</li>
+              <li data-password-check="common">Avoids common password patterns</li>
+              <li data-password-check="match">Both password fields match</li>
+            </ul>
+          </div>
+
+          <label class="auth-field">
+            <span>Confirm password</span>
+            <input id="signupPasswordConfirm" type="password" autocomplete="new-password" required placeholder="Repeat your password" />
+          </label>
+
+          <button id="signupSubmit" class="btn primary auth-submit" type="submit" disabled>Create account</button>
+          <p class="auth-switch-copy">Already have an account? <button type="button" class="text-link" data-auth-mode="signin">Sign in</button></p>
+        </form>
+      </article>
+    </div>
+  </section>
+
+  <div class="app-shell hidden" id="appShell">
     <aside class="sidebar" aria-label="Primary navigation">
       <button class="brand" data-route="today" aria-label="Student Hub home">
         <span class="brand-mark">S</span>
@@ -28,10 +140,10 @@
 
       <div class="sidebar-spacer"></div>
 
-      <div class="sidebar-card">
-        <span class="eyebrow">Demo mode</span>
-        <strong>100% local</strong>
-        <p>No account, database, AI key, or paid service required.</p>
+      <div class="sidebar-card" id="cloudStatusCard">
+        <span class="eyebrow">Cloud account</span>
+        <strong id="cloudStatusTitle">Connecting…</strong>
+        <p id="cloudStatusText">Authentication and semester metadata use Appwrite.</p>
       </div>
 
       <div class="nav-list bottom-nav-list">
@@ -49,7 +161,18 @@
         </div>
         <div class="top-actions">
           <button class="icon-btn" id="themeToggle" aria-label="Toggle color theme">☾</button>
-          <button class="avatar" aria-label="Demo profile">AD</button>
+          <div class="profile-wrap">
+            <button class="avatar" id="profileAvatar" aria-label="Open account menu" aria-haspopup="menu">SH</button>
+            <div class="profile-menu hidden" id="profileMenu" role="menu">
+              <div class="profile-summary">
+                <span class="eyebrow">Signed in</span>
+                <strong id="profileName">Student</strong>
+                <small id="profileEmail"></small>
+              </div>
+              <div class="profile-menu-divider"></div>
+              <button type="button" id="logoutButton" class="profile-menu-action danger" role="menuitem">Log out</button>
+            </div>
+          </div>
         </div>
       </header>
       <section id="page" class="page" aria-live="polite"></section>
@@ -108,8 +231,10 @@
   <template id="emptyTemplate">
     <div class="empty-state"><div class="empty-icon">✦</div><h3>Nothing here yet</h3><p>Capture something and Student Hub will connect it.</p></div>
   </template>
-  <script src="https://cdn.jsdelivr.net/npm/appwrite@28.1.0"></script>
+
+  <script src="https://cdn.jsdelivr.net/npm/appwrite@28.1.0/dist/iife/sdk.js"></script>
   <script src="appwrite.js"></script>
   <script src="app.js"></script>
+  <script src="auth.js"></script>
 </body>
 </html>

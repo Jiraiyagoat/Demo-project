@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
   <title>Student Hub Backend Test</title>
 
   <style>
@@ -17,278 +18,468 @@
 
     section {
       background: #1d1d1d;
+      border-radius: 12px;
       padding: 20px;
       margin-bottom: 18px;
-      border-radius: 12px;
     }
 
     input {
       display: block;
       width: 100%;
       box-sizing: border-box;
+      padding: 11px;
       margin: 8px 0;
-      padding: 10px;
     }
 
     button {
-      padding: 10px 14px;
-      margin: 5px;
+      padding: 10px 15px;
+      margin: 5px 5px 5px 0;
       cursor: pointer;
     }
 
     #status {
-      padding: 14px;
+      padding: 15px;
       background: #222;
-      border-radius: 8px;
+      border-radius: 10px;
       margin-bottom: 20px;
+    }
+
+    .good {
+      color: #5ee0a0;
+    }
+
+    .bad {
+      color: #ff7777;
     }
 
     pre {
       background: #000;
+      border-radius: 10px;
       padding: 16px;
-      min-height: 100px;
-      overflow: auto;
       white-space: pre-wrap;
+      word-break: break-word;
+      min-height: 120px;
     }
   </style>
 </head>
 
 <body>
 
-<h1>Student Hub Backend Test</h1>
+  <h1>Student Hub Backend Test</h1>
 
-<div id="status">
-  Checking Appwrite...
-</div>
+  <div id="status">
+    Loading Appwrite...
+  </div>
 
-<section>
-  <h2>Create account</h2>
+  <section>
+    <h2>1. Create account</h2>
 
-  <input id="signupName" placeholder="Name">
-  <input id="signupEmail" type="email" placeholder="Email">
-  <input id="signupPassword" type="password" placeholder="Password">
+    <input id="signupName" placeholder="Name">
+    <input id="signupEmail" type="email" placeholder="Email">
+    <input id="signupPassword" type="password" placeholder="Password">
 
-  <button id="signupButton">Create account</button>
-</section>
+    <button id="signupButton">Create account</button>
+  </section>
 
-<section>
-  <h2>Login</h2>
 
-  <input id="loginEmail" type="email" placeholder="Email">
-  <input id="loginPassword" type="password" placeholder="Password">
+  <section>
+    <h2>2. Login</h2>
 
-  <button id="loginButton">Login</button>
-  <button id="whoButton">Who am I?</button>
-  <button id="logoutButton">Logout</button>
-</section>
+    <input id="loginEmail" type="email" placeholder="Email">
+    <input id="loginPassword" type="password" placeholder="Password">
 
-<section>
-  <h2>Semester database</h2>
+    <button id="loginButton">Login</button>
+    <button id="whoButton">Who am I?</button>
+    <button id="logoutButton">Logout</button>
+  </section>
 
-  <button id="createSemesterButton">Create Fall 2026</button>
-  <button id="loadSemestersButton">Load semesters</button>
-</section>
 
-<h2>Output</h2>
-<pre id="output">Waiting...</pre>
+  <section>
+    <h2>3. Semester database</h2>
 
-<script src="https://cdn.jsdelivr.net/npm/appwrite@28.1.0"></script>
-<script src="appwrite.js"></script>
+    <button id="createSemesterButton">
+      Create Fall 2026
+    </button>
 
-<script>
-document.addEventListener("DOMContentLoaded", () => {
+    <button id="loadSemestersButton">
+      Load my semesters
+    </button>
+  </section>
 
-  const status = document.getElementById("status");
-  const output = document.getElementById("output");
 
-  function show(data) {
-    output.textContent =
-      typeof data === "string"
-        ? data
-        : JSON.stringify(data, null, 2);
-  }
+  <h2>Output</h2>
 
-  function fail(error) {
-    console.error(error);
+  <pre id="output">Waiting...</pre>
 
-    show({
-      message: error.message,
-      code: error.code,
-      type: error.type
-    });
-  }
 
-  try {
+  <!-- Current Appwrite browser SDK -->
+  <script src="https://cdn.jsdelivr.net/npm/appwrite@28.1.0/dist/iife/sdk.js"></script>
 
-    if (typeof Appwrite === "undefined") {
-      throw new Error("Appwrite SDK did not load.");
-    }
+  <script>
+    (() => {
 
-    if (!window.studentHubBackend) {
-      throw new Error("appwrite.js did not initialize.");
-    }
+      const status = document.getElementById("status");
+      const output = document.getElementById("output");
 
-    if (!window.studentHubBackend.account) {
-      throw new Error("Appwrite Account service is missing.");
-    }
 
-    if (!window.studentHubBackend.tablesDB) {
-      throw new Error("Appwrite TablesDB service is missing.");
-    }
+      function show(value) {
 
-    status.textContent = "✅ Appwrite initialized successfully";
+        output.textContent =
+          typeof value === "string"
+            ? value
+            : JSON.stringify(value, null, 2);
 
-  } catch (error) {
+      }
 
-    status.textContent = "❌ " + error.message;
-    show(error.message);
-    return;
-  }
 
+      function showError(error) {
 
-  const { account, tablesDB } = window.studentHubBackend;
+        console.error(error);
 
-  const DATABASE_ID = "student_hub";
-  const TABLE_ID = "semesters";
+        show({
+          message: error.message,
+          code: error.code || null,
+          type: error.type || null
+        });
 
+      }
 
-  document.getElementById("signupButton").addEventListener("click", async () => {
 
-    try {
+      // -----------------------------
+      // CHECK SDK
+      // -----------------------------
 
-      const result = await account.create({
-        userId: Appwrite.ID.unique(),
-        email: document.getElementById("signupEmail").value.trim(),
-        password: document.getElementById("signupPassword").value,
-        name: document.getElementById("signupName").value.trim()
-      });
+      if (!window.Appwrite) {
 
-      show({
-        success: true,
-        message: "Account created. Now log in.",
-        user: result
-      });
+        status.innerHTML =
+          '<span class="bad">❌ Appwrite SDK did not load.</span>';
 
-    } catch (error) {
-      fail(error);
-    }
+        return;
 
-  });
+      }
 
 
-  document.getElementById("loginButton").addEventListener("click", async () => {
+      if (typeof Appwrite.TablesDB !== "function") {
 
-    try {
+        status.innerHTML =
+          '<span class="bad">❌ TablesDB is unavailable in the loaded SDK.</span>';
 
-      const result = await account.createEmailPasswordSession({
-        email: document.getElementById("loginEmail").value.trim(),
-        password: document.getElementById("loginPassword").value
-      });
+        show({
+          TablesDB: typeof Appwrite.TablesDB,
+          Account: typeof Appwrite.Account,
+          Client: typeof Appwrite.Client
+        });
 
-      show({
-        success: true,
-        message: "Logged in successfully.",
-        session: result
-      });
+        return;
 
-    } catch (error) {
-      fail(error);
-    }
+      }
 
-  });
 
+      // -----------------------------
+      // APPWRITE CONFIGURATION
+      // -----------------------------
 
-  document.getElementById("whoButton").addEventListener("click", async () => {
+      const awClient = new Appwrite.Client();
 
-    try {
+      awClient
+        .setEndpoint("https://fra.cloud.appwrite.io/v1")
+        .setProject("6ab9533600167cfe8598");
 
-      const user = await account.get();
 
-      show({
-        success: true,
-        user
-      });
+      const awAccount =
+        new Appwrite.Account(awClient);
 
-    } catch (error) {
-      fail(error);
-    }
+      const awTables =
+        new Appwrite.TablesDB(awClient);
 
-  });
 
+      const DATABASE_ID =
+        "student_hub";
 
-  document.getElementById("logoutButton").addEventListener("click", async () => {
+      const TABLE_ID =
+        "semesters";
 
-    try {
 
-      await account.deleteSession({
-        sessionId: "current"
-      });
+      status.innerHTML =
+        '<span class="good">✅ Appwrite initialized successfully.</span>';
 
-      show("Logged out.");
 
-    } catch (error) {
-      fail(error);
-    }
+      // -----------------------------
+      // CREATE ACCOUNT
+      // -----------------------------
 
-  });
+      document
+        .getElementById("signupButton")
+        .addEventListener("click", async () => {
 
+          try {
 
-  document.getElementById("createSemesterButton").addEventListener("click", async () => {
+            const result =
+              await awAccount.create({
 
-    try {
+                userId: Appwrite.ID.unique(),
 
-      const user = await account.get();
+                email:
+                  document
+                    .getElementById("signupEmail")
+                    .value
+                    .trim(),
 
-      const semester = await tablesDB.createRow({
-        databaseId: DATABASE_ID,
-        tableId: TABLE_ID,
-        rowId: Appwrite.ID.unique(),
+                password:
+                  document
+                    .getElementById("signupPassword")
+                    .value,
 
-        data: {
-          userId: user.$id,
-          name: "Fall 2026",
-          startDate: "2026-09-01T00:00:00.000Z",
-          endDate: "2026-12-20T00:00:00.000Z",
-          isActive: true
-        }
-      });
+                name:
+                  document
+                    .getElementById("signupName")
+                    .value
+                    .trim()
 
-      show({
-        success: true,
-        message: "Semester created.",
-        semester
-      });
+              });
 
-    } catch (error) {
-      fail(error);
-    }
 
-  });
+            show({
+              success: true,
+              message:
+                "Account created. Now log in below.",
+              user: result
+            });
 
+          }
+          catch (error) {
 
-  document.getElementById("loadSemestersButton").addEventListener("click", async () => {
+            showError(error);
 
-    try {
+          }
 
-      const result = await tablesDB.listRows({
-        databaseId: DATABASE_ID,
-        tableId: TABLE_ID
-      });
+        });
 
-      show({
-        success: true,
-        count: result.total,
-        semesters: result.rows
-      });
 
-    } catch (error) {
-      fail(error);
-    }
+      // -----------------------------
+      // LOGIN
+      // -----------------------------
 
-  });
+      document
+        .getElementById("loginButton")
+        .addEventListener("click", async () => {
 
-});
-</script>
+          try {
+
+            const result =
+              await awAccount
+                .createEmailPasswordSession({
+
+                  email:
+                    document
+                      .getElementById("loginEmail")
+                      .value
+                      .trim(),
+
+                  password:
+                    document
+                      .getElementById("loginPassword")
+                      .value
+
+                });
+
+
+            show({
+              success: true,
+              message:
+                "Logged in successfully.",
+              session: result
+            });
+
+          }
+          catch (error) {
+
+            showError(error);
+
+          }
+
+        });
+
+
+      // -----------------------------
+      // WHO AM I
+      // -----------------------------
+
+      document
+        .getElementById("whoButton")
+        .addEventListener("click", async () => {
+
+          try {
+
+            const user =
+              await awAccount.get();
+
+            show({
+              success: true,
+              user
+            });
+
+          }
+          catch (error) {
+
+            showError(error);
+
+          }
+
+        });
+
+
+      // -----------------------------
+      // LOGOUT
+      // -----------------------------
+
+      document
+        .getElementById("logoutButton")
+        .addEventListener("click", async () => {
+
+          try {
+
+            await awAccount.deleteSession({
+              sessionId: "current"
+            });
+
+            show(
+              "Logged out successfully."
+            );
+
+          }
+          catch (error) {
+
+            showError(error);
+
+          }
+
+        });
+
+
+      // -----------------------------
+      // CREATE SEMESTER
+      // -----------------------------
+
+      document
+        .getElementById("createSemesterButton")
+        .addEventListener("click", async () => {
+
+          try {
+
+            const user =
+              await awAccount.get();
+
+
+            const semester =
+              await awTables.createRow({
+
+                databaseId:
+                  DATABASE_ID,
+
+                tableId:
+                  TABLE_ID,
+
+                rowId:
+                  Appwrite.ID.unique(),
+
+                data: {
+
+                  userId:
+                    user.$id,
+
+                  name:
+                    "Fall 2026",
+
+                  startDate:
+                    "2026-09-01T00:00:00.000Z",
+
+                  endDate:
+                    "2026-12-20T00:00:00.000Z",
+
+                  isActive:
+                    true
+
+                },
+
+                permissions: [
+
+                  Appwrite.Permission.read(
+                    Appwrite.Role.user(user.$id)
+                  ),
+
+                  Appwrite.Permission.update(
+                    Appwrite.Role.user(user.$id)
+                  ),
+
+                  Appwrite.Permission.delete(
+                    Appwrite.Role.user(user.$id)
+                  )
+
+                ]
+
+              });
+
+
+            show({
+              success: true,
+              message:
+                "Fall 2026 semester created.",
+              semester
+            });
+
+          }
+          catch (error) {
+
+            showError(error);
+
+          }
+
+        });
+
+
+      // -----------------------------
+      // LOAD SEMESTERS
+      // -----------------------------
+
+      document
+        .getElementById("loadSemestersButton")
+        .addEventListener("click", async () => {
+
+          try {
+
+            const result =
+              await awTables.listRows({
+
+                databaseId:
+                  DATABASE_ID,
+
+                tableId:
+                  TABLE_ID
+
+              });
+
+
+            show({
+              success: true,
+              count:
+                result.total,
+              semesters:
+                result.rows
+            });
+
+          }
+          catch (error) {
+
+            showError(error);
+
+          }
+
+        });
+
+
+    })();
+  </script>
 
 </body>
 </html>

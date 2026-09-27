@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0d1117" />
+  <meta name="description" content="Student Hub — a connected academic operating system demo." />
+  <title>Student Hub — Demo</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Primary navigation">
+      <button class="brand" data-route="today" aria-label="Student Hub home">
+        <span class="brand-mark">S</span>
+        <span class="brand-copy"><strong>Student Hub</strong><small>Academic OS</small></span>
+      </button>
+
+      <nav class="nav-list">
+        <button class="nav-item active" data-route="today"><span>◉</span><span>Today</span></button>
+        <button class="nav-item" data-route="planner"><span>▦</span><span>Planner</span></button>
+        <button class="nav-item" data-route="courses"><span>◫</span><span>Courses</span></button>
+        <button class="nav-item" data-route="study"><span>◎</span><span>Study</span></button>
+        <button class="nav-item" data-route="library"><span>⌁</span><span>Library</span></button>
+        <button class="nav-item" data-route="inbox"><span>↓</span><span>Inbox</span><span id="inboxBadge" class="nav-badge"></span></button>
+      </nav>
+
+      <div class="sidebar-spacer"></div>
+
+      <div class="sidebar-card">
+        <span class="eyebrow">Demo mode</span>
+        <strong>100% local</strong>
+        <p>No account, database, AI key, or paid service required.</p>
+      </div>
+
+      <div class="nav-list bottom-nav-list">
+        <button class="nav-item" id="openSearch"><span>⌕</span><span>Search</span><kbd>⌘K</kbd></button>
+        <button class="nav-item" id="openQuickAdd"><span>＋</span><span>Quick add</span><kbd>Q</kbd></button>
+        <button class="nav-item" data-route="settings"><span>⚙</span><span>Settings</span></button>
+      </div>
+    </aside>
+
+    <main class="main-area">
+      <header class="topbar">
+        <div>
+          <span class="eyebrow" id="pageEyebrow">Semester workspace</span>
+          <h1 id="pageTitle">Today</h1>
+        </div>
+        <div class="top-actions">
+          <button class="icon-btn" id="themeToggle" aria-label="Toggle color theme">☾</button>
+          <button class="avatar" aria-label="Demo profile">AD</button>
+        </div>
+      </header>
+      <section id="page" class="page" aria-live="polite"></section>
+    </main>
+
+    <nav class="mobile-nav" aria-label="Mobile navigation">
+      <button data-route="today" class="active"><span>◉</span><small>Today</small></button>
+      <button data-route="planner"><span>▦</span><small>Planner</small></button>
+      <button id="mobileQuickAdd" class="mobile-add" aria-label="Quick add">＋</button>
+      <button data-route="study"><span>◎</span><small>Study</small></button>
+      <button data-route="courses"><span>◫</span><small>Courses</small></button>
+    </nav>
+  </div>
+
+  <div class="modal-backdrop hidden" id="modalBackdrop" role="presentation"></div>
+  <section class="modal hidden" id="quickAddModal" role="dialog" aria-modal="true" aria-labelledby="quickAddTitle">
+    <div class="modal-header">
+      <div><span class="eyebrow">Natural-language capture</span><h2 id="quickAddTitle">Quick add</h2></div>
+      <button class="icon-btn close-modal" aria-label="Close">×</button>
+    </div>
+    <p class="modal-intro">Try: <button class="text-example" id="fillExample">“Chem lab report Friday 6pm, probably 2 hours”</button></p>
+    <textarea id="quickAddInput" rows="4" placeholder="Type a task, deadline, exam, note, or reminder..."></textarea>
+    <div id="parsePreview" class="parse-preview hidden"></div>
+    <div class="modal-actions">
+      <button class="btn secondary close-modal">Cancel</button>
+      <button class="btn secondary" id="parseQuickAdd">Understand</button>
+      <button class="btn primary hidden" id="confirmQuickAdd">Add to semester</button>
+    </div>
+  </section>
+
+  <section class="modal search-modal hidden" id="searchModal" role="dialog" aria-modal="true" aria-labelledby="searchTitle">
+    <div class="search-box-wrap">
+      <span>⌕</span><input id="searchInput" autocomplete="off" placeholder="Search your semester..." aria-label="Search your semester" />
+      <kbd>esc</kbd>
+    </div>
+    <div id="searchResults" class="search-results"></div>
+  </section>
+
+  <section class="modal hidden wide-modal" id="importModal" role="dialog" aria-modal="true" aria-labelledby="importTitle">
+    <div class="modal-header">
+      <div><span class="eyebrow">Zero-API import demo</span><h2 id="importTitle">Paste syllabus text</h2></div>
+      <button class="icon-btn close-modal" aria-label="Close">×</button>
+    </div>
+    <p class="modal-intro">This first demo intentionally uses a local rule-based parser. In production, this is where an AI extraction service would sit.</p>
+    <textarea id="syllabusInput" rows="12"></textarea>
+    <div id="syllabusPreview" class="syllabus-preview hidden"></div>
+    <div class="modal-actions">
+      <button class="btn secondary close-modal">Cancel</button>
+      <button class="btn secondary" id="parseSyllabus">Detect items</button>
+      <button class="btn primary hidden" id="confirmSyllabus">Import detected items</button>
+    </div>
+  </section>
+
+  <div id="toastStack" class="toast-stack" aria-live="polite"></div>
+
+  <template id="emptyTemplate">
+    <div class="empty-state"><div class="empty-icon">✦</div><h3>Nothing here yet</h3><p>Capture something and Student Hub will connect it.</p></div>
+  </template>
+
+  <script src="app.js"></script>
+</body>
+</html>

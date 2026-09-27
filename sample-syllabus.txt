@@ -1,0 +1,5 @@
+STAT210 Statistics
+Professor: Dr. Park
+Problem Set 3 due 2026-10-02 23:59 | estimated 2h
+Quiz: Probability & Distributions due 2026-10-06 14:00 | estimated 1h
+Midterm Exam due 2026-10-15 10:00 | estimated 5h

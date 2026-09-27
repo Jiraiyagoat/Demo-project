@@ -1,0 +1,10 @@
+{
+  "name": "Student Hub Demo",
+  "short_name": "Student Hub",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#090b10",
+  "theme_color": "#0d1117",
+  "description": "A connected academic operating system prototype.",
+  "icons": []
+}

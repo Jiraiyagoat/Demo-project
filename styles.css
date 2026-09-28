@@ -503,3 +503,11 @@ body.dark .auth-card { box-shadow: 0 30px 100px rgba(0,0,0,.4); }
   .course-form-grid { grid-template-columns: 1fr; }
   .course-form-wide { grid-column: auto; }
 }
+
+/* v0.4 — cloud task queue */
+.task-queue { padding: 6px 18px; }
+.task-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:14px; align-items:center; padding:14px 0; border-bottom:1px solid var(--line); }
+.task-row:last-child { border-bottom:0; }
+.task-row-copy strong { display:block; font-size:12px; }
+.task-row-copy small { display:block; margin-top:4px; color:var(--muted); font-size:10px; }
+@media (max-width: 680px) { .task-row { grid-template-columns:1fr; } .task-row .button-row { justify-content:flex-start; } }

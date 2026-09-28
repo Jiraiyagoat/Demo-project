@@ -193,16 +193,18 @@
     if (profileEmail) profileEmail.textContent = user.email || '';
 
     if (cloudStatusTitle) {
-      cloudStatusTitle.textContent = academicSync?.academicCloudReady
-        ? 'Academic cloud synced'
-        : (currentSemester ? 'Semester connected' : 'Account connected');
+      cloudStatusTitle.textContent = academicSync?.academicCloudReady && academicSync?.plannerCloudReady
+        ? 'Academic + planner cloud synced'
+        : (academicSync?.academicCloudReady ? 'Academic cloud synced' : (currentSemester ? 'Semester connected' : 'Account connected'));
     }
     if (cloudStatusText) {
-      cloudStatusText.textContent = academicSync?.academicCloudReady
-        ? `${currentSemester.name}: ${academicSync.courses || 0} courses and ${academicSync.assessments || 0} assessments are stored in Appwrite.`
-        : (currentSemester
-          ? `${currentSemester.name} is connected, but Courses/Assessments cloud sync is not ready yet. Check the Appwrite table setup.`
-          : 'Signed in with Appwrite. Semester sync needs attention.');
+      cloudStatusText.textContent = academicSync?.academicCloudReady && academicSync?.plannerCloudReady
+        ? `${currentSemester.name}: ${academicSync.courses || 0} courses, ${academicSync.assessments || 0} assessments, ${academicSync.tasks || 0} tasks and ${academicSync.workBlocks || 0} work blocks are stored in Appwrite.`
+        : (academicSync?.academicCloudReady
+          ? `${currentSemester.name}: courses and assessments are synced, but planner cloud needs the tasks/work_blocks tables.`
+          : (currentSemester
+            ? `${currentSemester.name} is connected, but Courses/Assessments cloud sync is not ready yet. Check the Appwrite table setup.`
+            : 'Signed in with Appwrite. Semester sync needs attention.'));
     }
 
     loading?.classList.add('hidden');

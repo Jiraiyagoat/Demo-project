@@ -60,6 +60,7 @@
       route:'today', theme:'light',
       semester:{name:'Fall Semester', start:isoDate(today), availableMinutesPerWeek:840},
       courses, assessments, events, resources, inbox,
+      tasks:[],
       studySessions:[],
       review:[
         {id:'rv1', courseId:'chem', topic:'Acids & Bases', due:isoDate(today), mastery:62},
@@ -76,6 +77,8 @@
     return seedState();
   }
   let state = loadState();
+  if (!Array.isArray(state.tasks)) state.tasks = [];
+  if (!Array.isArray(state.events)) state.events = [];
   let activeCourseId = null;
   let activeCourseTab = 'overview';
   let quickParsed = null;
@@ -84,6 +87,7 @@
   let cloudUser = null;
   let cloudSemester = null;
   let academicCloudReady = false;
+  let plannerCloudReady = false;
 
   function save(){ localStorage.setItem(activeStorageKey, JSON.stringify(state)); updateBadges(); }
   function course(id){ return state.courses.find(c=>c.id===id); }
@@ -136,6 +140,7 @@
     page.innerHTML=(renderers[state.route]||renderToday)();
     bindPageEvents();
     updateBadges();
+    updateCloudStatusCard();
   }
 
   function renderToday(){
@@ -181,6 +186,7 @@
   function renderPlanner(){
     const start=weekStart(); const days=[0,1,2,3,4,5,6].map(n=>addDays(start,n));
     const req=requiredMinutesThisWeek(), sched=scheduledWorkMinutesThisWeek();
+    const openTasks=(state.tasks||[]).filter(t=>t.status!=='done').sort((a,b)=>a.position-b.position).slice(0,8);
     return `
       <div class="stat-strip">
         <div class="stat"><span>Required this week</span><strong>${formatMinutes(req)}</strong></div>
@@ -188,18 +194,21 @@
         <div class="stat"><span>Unscheduled work</span><strong>${formatMinutes(Math.max(0,req-sched))}</strong></div>
         <div class="stat"><span>Capacity</span><strong>${formatMinutes(state.semester.availableMinutesPerWeek)}</strong></div>
       </div>
-      <div class="week-toolbar"><div><span class="eyebrow">Week of ${fmtDate(start,{month:'short',day:'numeric'})}</span><h2 style="margin:4px 0 0;font-size:18px">Drag work blocks between days</h2></div><div class="button-row"><button class="btn secondary" id="autoPlan">Auto-plan remaining</button></div></div>
+      <div class="week-toolbar"><div><span class="eyebrow">Week of ${fmtDate(start,{month:'short',day:'numeric'})}</span><h2 style="margin:4px 0 0;font-size:18px">Cloud planner · drag work blocks between days</h2></div><div class="button-row"><button class="btn secondary" id="autoPlan">Auto-plan remaining</button></div></div>
       <div class="week-grid">
         ${days.map(day=>{
-          const events=state.events.filter(e=>isoDate(e.start)===isoDate(day)).sort((a,b)=>new Date(a.start)-new Date(b.start));
+          const events=state.events.filter(e=>e.status!=='done'&&isoDate(e.start)===isoDate(day)).sort((a,b)=>new Date(a.start)-new Date(b.start));
           const deadlines=state.assessments.filter(a=>isoDate(a.due)===isoDate(day)&&a.status!=='done');
           return `<div class="day-column" data-day="${isoDate(day)}"><div class="day-head ${isToday(day)?'today':''}"><strong>${fmtDate(day,{weekday:'short'})}</strong><span>${fmtDate(day,{month:'short',day:'numeric'})}</span></div>${events.map(eventCard).join('')}${deadlines.map(deadlineCard).join('')}</div>`
         }).join('')}
       </div>
-      <p style="color:var(--muted);font-size:10px;margin-top:10px">Deadline cards are constraints. Only work/study blocks are draggable.</p>
+      <p style="color:var(--muted);font-size:10px;margin-top:10px">Deadlines are constraints. Work blocks are stored in Appwrite and keep their time when you sign in elsewhere.</p>
+      <div class="section-head"><div><h2>Work queue</h2><p>Planning an assessment creates actionable tasks before placing time blocks.</p></div><span class="pill ${plannerCloudReady?'success':''}">${plannerCloudReady?'Cloud tasks synced':'Planner cloud unavailable'}</span></div>
+      <article class="card task-queue">${openTasks.length?openTasks.map(taskRow).join(''):`<div class="empty-state"><div class="empty-icon">✓</div><h3>No open planner tasks</h3><p>Use Plan work on an assessment to create a task breakdown.</p></div>`}</article>
     `;
   }
-  function eventCard(e){ const c=course(e.courseId); const draggable=['work','study'].includes(e.type); return `<div class="event-card" ${draggable?'draggable="true"':''} data-event-id="${e.id}" style="--event-color:${c?.color||'var(--accent)'}"><div class="event-type">${e.type}</div><small>${fmtTime(e.start)}–${fmtTime(e.end)}</small><strong>${esc(e.title)}</strong></div>`; }
+  function eventCard(e){ const c=course(e.courseId); const draggable=['work','study'].includes(e.type); return `<div class="event-card" ${draggable?'draggable="true"':''} data-event-id="${e.id}" style="--event-color:${c?.color||'var(--accent)'}"><div class="event-type">${e.type}${e.cloudId?' · cloud':''}</div><small>${fmtTime(e.start)}–${fmtTime(e.end)}</small><strong>${esc(e.title)}</strong></div>`; }
+  function taskRow(t){ const c=course(t.courseId); const a=assessment(t.assessmentId); return `<div class="task-row"><div class="task-row-copy"><strong><span class="course-dot" style="--course-color:${c?.color||'var(--accent)'}"></span> ${esc(t.title)}</strong><small>${esc(c?.name||'Course')} · ${esc(a?.title||'Assessment')} · ${formatMinutes(t.remaining)} remaining</small></div><div class="button-row"><span class="pill">${esc(t.status.replace('_',' '))}</span><button class="btn secondary" data-task-done="${t.id}">Mark done</button></div></div>`; }
   function deadlineCard(a){ const c=course(a.courseId); return `<div class="event-card" style="--event-color:${c?.color||'var(--danger)'}"><div class="event-type">deadline · ${fmtTime(a.due)}</div><strong>${esc(a.title)}</strong><small>${formatMinutes(a.remaining)} remaining</small></div>`; }
 
   function renderCourses(){
@@ -244,9 +253,9 @@
   }
 
   function renderSettings(){
-    const cloudLabel = academicCloudReady ? 'Courses + assessments cloud' : 'Academic cloud unavailable';
-    const cloudClass = academicCloudReady ? 'success' : '';
-    return `<div class="settings-grid"><article class="card setting-card"><h3>Weekly study capacity</h3><p>The workload engine compares estimated required work with the time you realistically have.</p><label class="eyebrow" for="capacityInput">Hours / week</label><input id="capacityInput" type="number" min="1" max="80" step=".5" value="${state.semester.availableMinutesPerWeek/60}" style="width:100%;margin-top:7px"/></article><article class="card setting-card"><h3>Cloud academic data</h3><p>Semester, courses, and assessments are stored in Appwrite. Planner blocks, resources, review queues, and focus history are still local in this milestone.</p><span class="pill ${cloudClass}">${cloudLabel}</span></article><article class="card setting-card"><h3>One source of truth</h3><p>An assessment created through Quick Add or syllabus import is written once to Appwrite and then appears across Today, Planner, and Courses.</p><button class="btn secondary" data-route-jump="courses">Review cloud courses</button></article><article class="card setting-card"><h3>Next backend step</h3><p>Move planner work blocks and resources to cloud storage, then connect syllabus PDFs to Gemini.</p><span class="pill">Planner + files next</span></article></div>`;
+    const academicLabel = academicCloudReady ? 'Courses + assessments cloud' : 'Academic cloud unavailable';
+    const plannerLabel = plannerCloudReady ? 'Tasks + work blocks cloud' : 'Planner cloud unavailable';
+    return `<div class="settings-grid"><article class="card setting-card"><h3>Weekly study capacity</h3><p>The workload engine compares estimated required work with the time you realistically have.</p><label class="eyebrow" for="capacityInput">Hours / week</label><input id="capacityInput" type="number" min="1" max="80" step=".5" value="${state.semester.availableMinutesPerWeek/60}" style="width:100%;margin-top:7px"/></article><article class="card setting-card"><h3>Cloud academic data</h3><p>Semester, courses, assessments, planner tasks, and work blocks are stored in Appwrite.</p><span class="pill ${academicCloudReady?'success':''}">${academicLabel}</span> <span class="pill ${plannerCloudReady?'success':''}">${plannerLabel}</span></article><article class="card setting-card"><h3>One source of truth</h3><p>Plan work now creates cloud tasks and schedules cloud work blocks. Moving a work block updates Appwrite immediately.</p><button class="btn secondary" data-route-jump="planner">Open cloud planner</button></article><article class="card setting-card"><h3>Next backend step</h3><p>Move resources, study sessions, and Inbox into cloud storage, then connect syllabus PDFs to Gemini.</p><span class="pill">Study data + files next</span></article></div>`;
   }
 
   function bindPageEvents(){
@@ -259,6 +268,7 @@
     qs('#openImport')?.addEventListener('click',openImport);
     qs('#openAddCourse')?.addEventListener('click',openCourseModal);
     qs('#autoPlan')?.addEventListener('click',autoPlan);
+    qsa('[data-task-done]').forEach(b=>b.onclick=()=>markTaskDone(b.dataset.taskDone));
     bindDragDrop();
     qs('#timerToggle')?.addEventListener('click',toggleTimer);
     qs('#timerReset')?.addEventListener('click',()=>{stopTimer();state.timer.seconds=25*60;state.timer.running=false;save();render();});
@@ -272,28 +282,112 @@
     qs('#capacityInput')?.addEventListener('change',e=>{state.semester.availableMinutesPerWeek=Math.round(Number(e.target.value||14)*60);save();toast('Weekly capacity updated.');});
   }
 
-  function planAssessment(id){
-    const a=assessment(id); if(!a)return;
-    const now=startOfDay(new Date()); const due=startOfDay(new Date(a.due));
-    const existing=state.events.filter(e=>e.assessmentId===id&&e.type==='work');
-    if(existing.length){toast('Work for this assessment is already scheduled.');return;}
-    let remaining=a.remaining||a.effort||60; const days=Math.max(1,Math.ceil((due-now)/DAY)); const candidates=[];
-    for(let i=0;i<days&&remaining>0;i++){ const d=addDays(now,i); const block=Math.min(60,remaining); const h=17+(i%3); candidates.push({id:uid('e'),courseId:a.courseId,assessmentId:a.id,title:a.title+' · work',type:'work',start:dateAt(d,`${String(h).padStart(2,'0')}:00`).toISOString(),end:new Date(dateAt(d,`${String(h).padStart(2,'0')}:00`).getTime()+block*60000).toISOString()}); remaining-=block; }
-    state.events.push(...candidates); save(); toast(`Planned ${candidates.length} work block${candidates.length!==1?'s':''}.`); render();
+  function taskTemplatesForAssessment(a){
+    const type=String(a.type||'').toLowerCase();
+    if(/exam|quiz|midterm|final/.test(type)) return [['Review covered concepts',.35],['Practice problems',.45],['Final recall check',.20]];
+    if(/project/.test(type)) return [['Clarify requirements + outline',.20],['Build core deliverable',.55],['Review + refine',.20],['Final submission check',.05]];
+    return [['Understand requirements',.15],['Complete main work',.65],['Check + revise',.15],['Submit / final check',.05]];
   }
-  function autoPlan(){
-    let made=0; state.assessments.filter(a=>a.status!=='done').forEach(a=>{ if(!state.events.some(e=>e.assessmentId===a.id&&e.type==='work')){ const before=state.events.length; planAssessmentSilent(a.id); made+=state.events.length-before; } }); save(); render(); toast(made?`Created ${made} work blocks.`:'Everything already has planned work.');
+
+  function buildTaskDrafts(a){
+    const total=Math.max(10,Math.round(a.remaining||a.effort||60));
+    let templates=taskTemplatesForAssessment(a);
+    if(total<45) templates=[['Complete assessment',1]];
+    else if(total<90) templates=[['Complete main work',.75],['Review + submit',.25]];
+    let allocated=0;
+    return templates.map(([label,pct],index)=>{
+      const estimate=index===templates.length-1 ? Math.max(1,total-allocated) : Math.max(1,Math.round(total*pct));
+      allocated+=estimate;
+      return {id:uid('t'),courseId:a.courseId,assessmentId:a.id,title:label,estimate,remaining:estimate,status:'not_started',position:index,sourceType:'planner'};
+    });
   }
-  function planAssessmentSilent(id){
-    const a=assessment(id); if(!a)return; let remaining=Math.min(a.remaining||a.effort||60,180); const now=startOfDay(new Date()); const days=Math.max(1,Math.ceil((startOfDay(new Date(a.due))-now)/DAY));
-    for(let i=0;i<days&&remaining>0;i++){ const d=addDays(now,i); const block=Math.min(60,remaining); const h=16+((i+state.events.length)%4); state.events.push({id:uid('e'),courseId:a.courseId,assessmentId:a.id,title:a.title+' · work',type:'work',start:dateAt(d,`${String(h).padStart(2,'0')}:00`).toISOString(),end:new Date(dateAt(d,`${String(h).padStart(2,'0')}:00`).getTime()+block*60000).toISOString()}); remaining-=block; }
+
+  async function ensureTasksForAssessment(a){
+    const existing=(state.tasks||[]).filter(t=>t.assessmentId===a.id && t.status!=='done');
+    if(existing.length) return existing.sort((x,y)=>x.position-y.position);
+    const drafts=buildTaskDrafts(a), created=[];
+    for(const draft of drafts){
+      const row=await window.studentHubCloud.createTask(cloudUser,cloudSemester,draft,draft.id);
+      created.push(rowToTask(row));
+    }
+    state.tasks.push(...created); save();
+    return created;
   }
+
+  async function planAssessment(id, options={}){
+    const a=assessment(id); if(!a)return 0;
+    if(!plannerCloudReady || !cloudUser || !cloudSemester){ if(!options.silent)toast('Planner cloud is not ready. Check tasks and work_blocks in Appwrite.'); return 0; }
+    const existing=state.events.filter(e=>e.assessmentId===id&&e.type==='work'&&e.status!=='done');
+    if(existing.length){ if(!options.silent)toast('Work for this assessment is already scheduled.'); return 0; }
+    try{
+      const tasks=await ensureTasksForAssessment(a);
+      const now=startOfDay(new Date()); const due=startOfDay(new Date(a.due)); const days=Math.max(1,Math.ceil((due-now)/DAY));
+      let blockIndex=0, made=0;
+      for(const task of tasks){
+        let left=Math.max(0,task.remaining||task.estimate||0);
+        while(left>0){
+          const minutes=Math.min(60,left); const d=addDays(now,blockIndex%days); const h=16+(blockIndex%4);
+          const start=dateAt(d,`${String(h).padStart(2,'0')}:00`); const end=new Date(start.getTime()+minutes*60000);
+          const draft={id:uid('wb'),courseId:a.courseId,assessmentId:a.id,taskId:task.id,title:`${a.title} · ${task.title}`,type:'work',start:start.toISOString(),end:end.toISOString(),status:'planned',sourceType:'planner'};
+          const row=await window.studentHubCloud.createWorkBlock(cloudUser,cloudSemester,draft,draft.id);
+          state.events.push(rowToWorkBlock(row)); made++; blockIndex++; left-=minutes;
+        }
+      }
+      save(); render(); updateCloudStatusCard();
+      if(!options.silent)toast(`Created ${tasks.length} tasks and ${made} cloud work block${made!==1?'s':''}.`);
+      return made;
+    }catch(error){ console.error('Cloud planning failed:',error); if(!options.silent)toast('Could not create cloud planner data. Check the tasks/work_blocks table setup.'); return 0; }
+  }
+
+  async function autoPlan(){
+    if(!plannerCloudReady){toast('Planner cloud is not ready.');return;}
+    const button=qs('#autoPlan'); if(button){button.disabled=true;button.textContent='Planning…';}
+    let made=0;
+    for(const a of state.assessments.filter(a=>a.status!=='done')){
+      if(!state.events.some(e=>e.assessmentId===a.id&&e.type==='work'&&e.status!=='done')) made+=await planAssessment(a.id,{silent:true});
+    }
+    render(); toast(made?`Created ${made} cloud work blocks.`:'Everything already has planned work.');
+  }
+
+  async function markTaskDone(id){
+    const task=(state.tasks||[]).find(t=>t.id===id); if(!task||task.status==='done')return;
+    if(!plannerCloudReady){toast('Planner cloud is not ready.');return;}
+    const oldRemaining=task.remaining;
+    try{
+      await window.studentHubCloud.updateTask(task.cloudId||task.id,{status:'done',remaining:0});
+      task.status='done'; task.remaining=0;
+      const linkedBlocks=state.events.filter(e=>e.type==='work'&&e.taskId===task.id&&e.status!=='done');
+      for(const block of linkedBlocks){
+        if(block.cloudId) await window.studentHubCloud.updateWorkBlock(block.cloudId,{status:'done'});
+      }
+      state.events=state.events.filter(e=>!(e.type==='work'&&e.taskId===task.id));
+      const a=assessment(task.assessmentId);
+      if(a){
+        const remaining=(state.tasks||[]).filter(t=>t.assessmentId===a.id&&t.status!=='done').reduce((sum,t)=>sum+(t.remaining||0),0);
+        a.remaining=remaining; a.status=remaining===0?'done':'in_progress';
+        if(a.cloudId) await window.studentHubCloud.updateAssessment(a.cloudId,{remaining,status:a.status});
+      }
+      save(); render(); toast(`${task.title} completed.`);
+    }catch(error){ task.remaining=oldRemaining; console.error(error); toast('Could not complete the task in Appwrite.'); }
+  }
+
   function bindDragDrop(){
     qsa('.event-card[draggable="true"]').forEach(card=>card.addEventListener('dragstart',e=>e.dataTransfer.setData('text/plain',card.dataset.eventId)));
     qsa('.day-column').forEach(col=>{
       col.addEventListener('dragover',e=>{e.preventDefault();col.classList.add('drag-over')});
       col.addEventListener('dragleave',()=>col.classList.remove('drag-over'));
-      col.addEventListener('drop',e=>{e.preventDefault();col.classList.remove('drag-over');const id=e.dataTransfer.getData('text/plain');const ev=state.events.find(x=>x.id===id);if(!ev)return;const duration=new Date(ev.end)-new Date(ev.start);const old=new Date(ev.start);const time=`${String(old.getHours()).padStart(2,'0')}:${String(old.getMinutes()).padStart(2,'0')}`;ev.start=dateAt(new Date(col.dataset.day),time).toISOString();ev.end=new Date(new Date(ev.start).getTime()+duration).toISOString();save();render();toast('Work block moved.');});
+      col.addEventListener('drop',async e=>{
+        e.preventDefault(); col.classList.remove('drag-over');
+        const id=e.dataTransfer.getData('text/plain'); const ev=state.events.find(x=>x.id===id); if(!ev)return;
+        const oldStart=ev.start, oldEnd=ev.end; const duration=new Date(ev.end)-new Date(ev.start); const old=new Date(ev.start);
+        const time=`${String(old.getHours()).padStart(2,'0')}:${String(old.getMinutes()).padStart(2,'0')}`;
+        ev.start=dateAt(new Date(col.dataset.day),time).toISOString(); ev.end=new Date(new Date(ev.start).getTime()+duration).toISOString();
+        save(); render();
+        if(ev.type==='work'&&ev.cloudId&&plannerCloudReady){
+          try{ await window.studentHubCloud.updateWorkBlock(ev.cloudId,{start:ev.start,end:ev.end}); toast('Cloud work block moved.'); }
+          catch(error){ console.error(error); ev.start=oldStart; ev.end=oldEnd; save(); render(); toast('Could not move the cloud block. Change reverted.'); }
+        }else toast('Study block moved locally.');
+      });
     });
   }
 
@@ -337,7 +431,7 @@
       }
       const inboxId=qs('#quickAddInput').dataset.inboxId;
       if(inboxId){const i=state.inbox.find(x=>x.id===inboxId);if(i)i.processed=true;}
-      save(); closeModals(); render();
+      save(); closeModals(); render(); updateCloudStatusCard();
       toast(academicCloudReady?'Assessment saved to Appwrite and surfaced everywhere.':'Added locally; cloud assessment sync is unavailable.');
     } catch (error) {
       console.error(error);
@@ -369,7 +463,7 @@
         }
         imported++;
       }
-      save(); closeModals(); render();
+      save(); closeModals(); render(); updateCloudStatusCard();
       toast(`Imported ${imported} assessment${imported!==1?'s':''}${academicCloudReady?' to Appwrite':''}.`);
     } catch (error) {
       console.error(error);
@@ -423,6 +517,29 @@
     };
   }
 
+  function rowToTask(row) {
+    return { id:row.$id, cloudId:row.$id, legacyId:row.legacyId||'', courseId:row.courseId, assessmentId:row.assessmentId, title:row.title||'Untitled task', estimate:Number(row.estimate||0), remaining:Number(row.remaining??row.estimate??0), status:row.status||'not_started', position:Number(row.position||0), sourceType:row.sourceType||'planner' };
+  }
+
+  function rowToWorkBlock(row) {
+    return { id:row.$id, cloudId:row.$id, legacyId:row.legacyId||'', courseId:row.courseId, assessmentId:row.assessmentId, taskId:row.taskId||'', title:row.title||'Work block', type:'work', start:row.start, end:row.end, status:row.status||'planned', sourceType:row.sourceType||'planner' };
+  }
+
+  function applyCloudPlannerData(payload) {
+    const tasks=Array.isArray(payload?.tasks)?payload.tasks:[];
+    const blocks=Array.isArray(payload?.workBlocks)?payload.workBlocks:[];
+    state.tasks=tasks.map(rowToTask);
+    const localNonWork=state.events.filter(e=>e.type!=='work');
+    state.events=[...localNonWork,...blocks.filter(row=>row.status!=='done').map(rowToWorkBlock)];
+    save(); render();
+  }
+
+  function updateCloudStatusCard(){
+    const title=qs('#cloudStatusTitle'), text=qs('#cloudStatusText'); if(!title||!text||!cloudUser)return;
+    if(academicCloudReady&&plannerCloudReady){ title.textContent='Academic + planner cloud synced'; text.textContent=`${state.semester.name}: ${state.courses.length} courses, ${state.assessments.length} assessments, ${(state.tasks||[]).filter(t=>t.status!=='done').length} open tasks and ${state.events.filter(e=>e.type==='work').length} planned work blocks.`; }
+    else if(academicCloudReady){ title.textContent='Academic cloud synced'; text.textContent=`${state.semester.name}: courses and assessments are synced. Planner cloud still needs tasks/work_blocks setup.`; }
+  }
+
   function remapDependentLocalData(courseMap, assessmentMap) {
     const mapCourse = id => courseMap.get(id) || id;
     const mapAssessment = id => assessmentMap.get(id) || id;
@@ -473,33 +590,23 @@
   }
 
   async function setCloudContext(user, semester) {
-    cloudUser = user || null;
-    cloudSemester = semester || null;
-    academicCloudReady = false;
-
+    cloudUser=user||null; cloudSemester=semester||null; academicCloudReady=false; plannerCloudReady=false;
     setUserContext(user?.$id, semester?.name || 'My Semester');
+    if(!user||!semester||!window.studentHubCloud?.syncAcademicSeed) return {academicCloudReady:false,plannerCloudReady:false};
 
-    if (!user || !semester || !window.studentHubCloud?.syncAcademicSeed) {
-      return { academicCloudReady: false };
-    }
+    try{
+      const academic=await window.studentHubCloud.syncAcademicSeed(user,semester,state.courses,state.assessments);
+      applyCloudAcademicData(academic); academicCloudReady=true;
+    }catch(error){ console.error('Academic cloud sync failed:',error); render(); return {academicCloudReady:false,plannerCloudReady:false,error}; }
 
-    try {
-      const payload = await window.studentHubCloud.syncAcademicSeed(
-        user,
-        semester,
-        state.courses,
-        state.assessments
-      );
-      applyCloudAcademicData(payload);
-      academicCloudReady = true;
-      render();
-      return { academicCloudReady: true, courses: state.courses.length, assessments: state.assessments.length };
-    } catch (error) {
-      console.error('Academic cloud sync failed:', error);
-      academicCloudReady = false;
-      render();
-      return { academicCloudReady: false, error };
-    }
+    try{
+      if(!Array.isArray(state.tasks))state.tasks=[];
+      const planner=await window.studentHubCloud.syncPlannerSeed(user,semester,state.tasks,state.events.filter(e=>e.type==='work'));
+      applyCloudPlannerData(planner); plannerCloudReady=true;
+    }catch(error){ console.error('Planner cloud sync failed:',error); plannerCloudReady=false; }
+
+    render(); updateCloudStatusCard();
+    return {academicCloudReady:true,plannerCloudReady,courses:state.courses.length,assessments:state.assessments.length,tasks:(state.tasks||[]).length,workBlocks:state.events.filter(e=>e.type==='work').length};
   }
 
   function openCourseModal() {
@@ -551,6 +658,7 @@
       save();
       closeModals();
       render();
+      updateCloudStatusCard();
       toast(`${draft.name} saved to Appwrite.`);
     } catch (error) {
       console.error(error);
@@ -570,6 +678,8 @@
       }
       activeStorageKey = nextKey;
       state = loadState(activeStorageKey);
+      if (!Array.isArray(state.tasks)) state.tasks = [];
+      if (!Array.isArray(state.events)) state.events = [];
     }
     if (semesterName) state.semester.name = semesterName;
     save();
@@ -581,6 +691,7 @@
     cloudUser = null;
     cloudSemester = null;
     academicCloudReady = false;
+    plannerCloudReady = false;
     activeStorageKey = BASE_STORAGE_KEY;
     state = loadState(activeStorageKey);
   }

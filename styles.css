@@ -511,3 +511,22 @@ body.dark .auth-card { box-shadow: 0 30px 100px rgba(0,0,0,.4); }
 .task-row-copy strong { display:block; font-size:12px; }
 .task-row-copy small { display:block; margin-top:4px; color:var(--muted); font-size:10px; }
 @media (max-width: 680px) { .task-row { grid-template-columns:1fr; } .task-row .button-row { justify-content:flex-start; } }
+
+/* v0.5 — cloud Library, Inbox, and study history */
+.course-form-grid input,
+.course-form-grid select,
+.course-form-grid textarea { width: 100%; }
+.course-form-grid textarea { resize: vertical; }
+.cloud-note { margin: 14px 0 0; color: var(--muted); font-size: 9px; line-height: 1.45; }
+.resource-open { display:inline-flex; margin-top:10px; color:var(--accent); font-size:10px; font-weight:800; text-decoration:none; }
+.resource-open:hover { text-decoration:underline; }
+.session-history { padding: 4px 18px; }
+.session-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:14px; align-items:center; padding:14px 0; border-bottom:1px solid var(--line); }
+.session-row:last-child { border-bottom:0; }
+.session-row strong { display:block; font-size:12px; }
+.session-row small { display:block; margin-top:4px; color:var(--muted); font-size:10px; }
+@media (max-width: 680px) {
+  .library-toolbar { align-items:stretch; flex-direction:column; }
+  .library-toolbar .button-row { justify-content:space-between; }
+  .session-row { grid-template-columns:1fr; }
+}

@@ -193,18 +193,22 @@
     if (profileEmail) profileEmail.textContent = user.email || '';
 
     if (cloudStatusTitle) {
-      cloudStatusTitle.textContent = academicSync?.academicCloudReady && academicSync?.plannerCloudReady
-        ? 'Academic + planner cloud synced'
-        : (academicSync?.academicCloudReady ? 'Academic cloud synced' : (currentSemester ? 'Semester connected' : 'Account connected'));
+      cloudStatusTitle.textContent = academicSync?.academicCloudReady && academicSync?.plannerCloudReady && academicSync?.knowledgeCloudReady
+        ? 'Full semester cloud synced'
+        : (academicSync?.academicCloudReady && academicSync?.plannerCloudReady
+          ? 'Academic + planner cloud synced'
+          : (academicSync?.academicCloudReady ? 'Academic cloud synced' : (currentSemester ? 'Semester connected' : 'Account connected')));
     }
     if (cloudStatusText) {
-      cloudStatusText.textContent = academicSync?.academicCloudReady && academicSync?.plannerCloudReady
-        ? `${currentSemester.name}: ${academicSync.courses || 0} courses, ${academicSync.assessments || 0} assessments, ${academicSync.tasks || 0} tasks and ${academicSync.workBlocks || 0} work blocks are stored in Appwrite.`
-        : (academicSync?.academicCloudReady
-          ? `${currentSemester.name}: courses and assessments are synced, but planner cloud needs the tasks/work_blocks tables.`
-          : (currentSemester
-            ? `${currentSemester.name} is connected, but Courses/Assessments cloud sync is not ready yet. Check the Appwrite table setup.`
-            : 'Signed in with Appwrite. Semester sync needs attention.'));
+      cloudStatusText.textContent = academicSync?.academicCloudReady && academicSync?.plannerCloudReady && academicSync?.knowledgeCloudReady
+        ? `${currentSemester.name}: ${academicSync.courses || 0} courses, ${academicSync.assessments || 0} assessments, ${academicSync.tasks || 0} tasks, ${academicSync.resources || 0} resources, ${academicSync.inbox || 0} open Inbox items, and ${academicSync.studySessions || 0} study sessions are stored in Appwrite.`
+        : (academicSync?.academicCloudReady && academicSync?.plannerCloudReady
+          ? `${currentSemester.name}: academic and planner data are synced, but Library/Inbox/study need the resources, inbox_items, and study_sessions tables.`
+          : (academicSync?.academicCloudReady
+            ? `${currentSemester.name}: courses and assessments are synced, but planner cloud needs the tasks/work_blocks tables.`
+            : (currentSemester
+              ? `${currentSemester.name} is connected, but Courses/Assessments cloud sync is not ready yet. Check the Appwrite table setup.`
+              : 'Signed in with Appwrite. Semester sync needs attention.')));
     }
 
     loading?.classList.add('hidden');

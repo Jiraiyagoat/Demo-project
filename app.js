@@ -68,7 +68,7 @@
         {id:'rv3', courseId:'stats', topic:'Probability', due:isoDate(tomorrow), mastery:58}
       ],
       practiceIndex:0,
-      timer:{seconds:25*60, running:false, context:{courseId:'stats',topic:'Probability'}}
+      timer:{seconds:25*60, initialSeconds:25*60, running:false, context:{courseId:'stats',topic:'Probability'}}
     };
   }
 
@@ -79,6 +79,10 @@
   let state = loadState();
   if (!Array.isArray(state.tasks)) state.tasks = [];
   if (!Array.isArray(state.events)) state.events = [];
+  if (!Array.isArray(state.resources)) state.resources = [];
+  if (!Array.isArray(state.inbox)) state.inbox = [];
+  if (!Array.isArray(state.studySessions)) state.studySessions = [];
+  if (!state.timer.initialSeconds) state.timer.initialSeconds = state.timer.seconds || 25*60;
   let activeCourseId = null;
   let activeCourseTab = 'overview';
   let quickParsed = null;
@@ -88,6 +92,7 @@
   let cloudSemester = null;
   let academicCloudReady = false;
   let plannerCloudReady = false;
+  let knowledgeCloudReady = false;
 
   function save(){ localStorage.setItem(activeStorageKey, JSON.stringify(state)); updateBadges(); }
   function course(id){ return state.courses.find(c=>c.id===id); }
@@ -239,28 +244,32 @@
   ];
   function renderStudy(){
     const t=state.timer; const c=course(t.context.courseId); const q=practiceBank[state.practiceIndex%practiceBank.length];
-    return `<div class="study-layout"><article class="card focus-card"><span class="eyebrow">Focus session</span><div class="timer" id="timerDisplay">${formatTimer(t.seconds)}</div><div class="timer-context"><span class="course-dot" style="--course-color:${c?.color||'var(--accent)'}"></span> ${esc(c?.name||'Study')} → ${esc(t.context.topic)}</div><div class="button-row" style="margin-top:24px"><button class="btn primary" id="timerToggle">${t.running?'Pause':'Start'}</button><button class="btn secondary" id="timerReset">Reset</button></div></article><article class="card practice-card"><span class="eyebrow">Practice from your course context</span><h3><span class="course-dot" style="--course-color:${colorForCourse(q.courseId)}"></span> ${esc(q.topic)}</h3><div class="practice-question"><p>${esc(q.q)}</p><p class="answer hidden" id="practiceAnswer">${esc(q.a)}</p></div><div class="button-row"><button class="btn secondary" id="showAnswer">Reveal answer</button><button class="btn primary" id="nextQuestion">Next question</button></div></article></div><div class="section-head"><div><h2>Due for review</h2><p>Simple spaced-review queue for the prototype.</p></div></div><div class="review-queue">${state.review.map(reviewRow).join('')}</div>`;
+    const recent=[...(state.studySessions||[])].sort((a,b)=>new Date(b.completedAt)-new Date(a.completedAt)).slice(0,6);
+    const totalMinutes=(state.studySessions||[]).reduce((sum,x)=>sum+Number(x.minutes||0),0);
+    return `<div class="study-layout"><article class="card focus-card"><span class="eyebrow">Focus session</span><div class="timer" id="timerDisplay">${formatTimer(t.seconds)}</div><div class="timer-context"><span class="course-dot" style="--course-color:${c?.color||'var(--accent)'}"></span> ${esc(c?.name||'Study')} → ${esc(t.context.topic)}</div><div class="button-row" style="margin-top:24px"><button class="btn primary" id="timerToggle">${t.running?'Pause':'Start'}</button><button class="btn secondary" id="timerReset">Reset</button><button class="btn secondary" id="finishSession">Finish & save</button></div><p class="cloud-note">${knowledgeCloudReady?'Completed focus sessions sync to Appwrite.':'Focus completion is local until study_sessions is ready.'}</p></article><article class="card practice-card"><span class="eyebrow">Practice from your course context</span><h3><span class="course-dot" style="--course-color:${colorForCourse(q.courseId)}"></span> ${esc(q.topic)}</h3><div class="practice-question"><p>${esc(q.q)}</p><p class="answer hidden" id="practiceAnswer">${esc(q.a)}</p></div><div class="button-row"><button class="btn secondary" id="showAnswer">Reveal answer</button><button class="btn primary" id="nextQuestion">Next question</button></div></article></div><div class="section-head"><div><h2>Due for review</h2><p>Simple spaced-review queue for the prototype.</p></div></div><div class="review-queue">${state.review.map(reviewRow).join('')}</div><div class="section-head"><div><h2>Study history</h2><p>${formatMinutes(totalMinutes)} recorded across ${(state.studySessions||[]).length} session${(state.studySessions||[]).length===1?'':'s'}.</p></div><span class="pill ${knowledgeCloudReady?'success':''}">${knowledgeCloudReady?'Cloud sessions synced':'Study cloud unavailable'}</span></div><article class="card session-history">${recent.length?recent.map(studySessionRow).join(''):`<div class="empty-state"><div class="empty-icon">◎</div><h3>No completed focus sessions yet</h3><p>Finish a timer and the session will appear here.</p></div>`}</article>`;
   }
+  function studySessionRow(session){ const c=course(session.courseId); return `<div class="session-row"><div><strong><span class="course-dot" style="--course-color:${c?.color||'var(--accent)'}"></span> ${esc(session.topic||'Study')}</strong><small>${esc(c?.name||'Course')} · ${fmtDate(session.completedAt,{month:'short',day:'numeric'})} ${fmtTime(session.completedAt)}</small></div><span class="pill">${formatMinutes(session.minutes)}</span></div>`; }
 
   function renderLibrary(){
-    return `<div class="library-toolbar"><input class="search-input" id="librarySearch" placeholder="Search notes, files, links and topics..."/><button class="btn secondary" id="addDemoResource">+ Demo resource</button></div><div class="resource-grid" id="resourceGrid">${state.resources.map(resourceCard).join('')}</div>`;
+    return `<div class="library-toolbar"><input class="search-input" id="librarySearch" placeholder="Search notes, files, links and topics..."/><div class="button-row"><span class="pill ${knowledgeCloudReady?'success':''}">${knowledgeCloudReady?'Cloud library synced':'Library cloud unavailable'}</span><button class="btn primary" id="openAddResource">+ Add resource</button></div></div><div class="resource-grid" id="resourceGrid">${state.resources.map(resourceCard).join('')}</div>`;
   }
-  function resourceCard(r){ const c=course(r.courseId); const icon={PDF:'▤',Note:'✎',Link:'↗'}[r.type]||'•'; return `<article class="card resource-card" data-resource-text="${esc((r.title+' '+r.topic+' '+courseName(r.courseId)).toLowerCase())}"><div><div class="resource-icon">${icon}</div><h3>${esc(r.title)}</h3><p>${esc(r.description)}</p></div><footer><span><span class="course-dot" style="--course-color:${c?.color||'var(--accent)'}"></span> ${esc(c?.name||'Unassigned')} · ${esc(r.topic||'General')}</span><span>${esc(r.updated)}</span></footer></article>`; }
+  function resourceCard(r){ const c=course(r.courseId); const icon={PDF:'▤',Note:'✎',Link:'↗'}[r.type]||'•'; const open=r.url?`<a class="resource-open" href="${esc(r.url)}" target="_blank" rel="noopener">Open ↗</a>`:''; return `<article class="card resource-card" data-resource-text="${esc((r.title+' '+r.topic+' '+courseName(r.courseId)+' '+r.description).toLowerCase())}"><div><div class="resource-icon">${icon}</div><h3>${esc(r.title)}</h3><p>${esc(r.description)}</p>${open}</div><footer><span><span class="course-dot" style="--course-color:${c?.color||'var(--accent)'}"></span> ${esc(c?.name||'Unassigned')} · ${esc(r.topic||'General')}</span><span>${esc(r.updated||'Cloud')}</span></footer></article>`; }
 
   function renderInbox(){
     const items=state.inbox.filter(i=>!i.processed).sort((a,b)=>new Date(b.created)-new Date(a.created));
-    return `<div class="inbox-compose"><textarea id="inboxInput" placeholder="Drop something here without organizing it first..."></textarea><button class="btn primary" id="captureInbox">Capture</button></div><div class="section-head"><div><h2>Unorganized capture</h2><p>Process later. The system should reduce setup friction.</p></div></div><div class="inbox-list">${items.length?items.map(i=>`<article class="card inbox-item"><div><p>${esc(i.text)}</p><small>Captured ${timeAgo(i.created)}</small></div><div class="button-row"><button class="btn secondary" data-organize="${i.id}">Organize</button><button class="btn ghost" data-archive="${i.id}">Archive</button></div></article>`).join(''):`<div class="card empty-state"><div class="empty-icon">✓</div><h3>Inbox zero</h3><p>Everything captured has been processed.</p></div>`}</div>`;
+    return `<div class="inbox-compose"><textarea id="inboxInput" placeholder="Drop something here without organizing it first..."></textarea><button class="btn primary" id="captureInbox">Capture</button></div><div class="section-head"><div><h2>Unorganized capture</h2><p>Process later. Captures now follow you between devices.</p></div><span class="pill ${knowledgeCloudReady?'success':''}">${knowledgeCloudReady?'Cloud inbox synced':'Inbox cloud unavailable'}</span></div><div class="inbox-list">${items.length?items.map(i=>`<article class="card inbox-item"><div><p>${esc(i.text)}</p><small>Captured ${timeAgo(i.created)}</small></div><div class="button-row"><button class="btn secondary" data-organize="${i.id}">Organize</button><button class="btn ghost" data-archive="${i.id}">Archive</button></div></article>`).join(''):`<div class="card empty-state"><div class="empty-icon">✓</div><h3>Inbox zero</h3><p>Everything captured has been processed.</p></div>`}</div>`;
   }
 
   function renderSettings(){
     const academicLabel = academicCloudReady ? 'Courses + assessments cloud' : 'Academic cloud unavailable';
     const plannerLabel = plannerCloudReady ? 'Tasks + work blocks cloud' : 'Planner cloud unavailable';
-    return `<div class="settings-grid"><article class="card setting-card"><h3>Weekly study capacity</h3><p>The workload engine compares estimated required work with the time you realistically have.</p><label class="eyebrow" for="capacityInput">Hours / week</label><input id="capacityInput" type="number" min="1" max="80" step=".5" value="${state.semester.availableMinutesPerWeek/60}" style="width:100%;margin-top:7px"/></article><article class="card setting-card"><h3>Cloud academic data</h3><p>Semester, courses, assessments, planner tasks, and work blocks are stored in Appwrite.</p><span class="pill ${academicCloudReady?'success':''}">${academicLabel}</span> <span class="pill ${plannerCloudReady?'success':''}">${plannerLabel}</span></article><article class="card setting-card"><h3>One source of truth</h3><p>Plan work now creates cloud tasks and schedules cloud work blocks. Moving a work block updates Appwrite immediately.</p><button class="btn secondary" data-route-jump="planner">Open cloud planner</button></article><article class="card setting-card"><h3>Next backend step</h3><p>Move resources, study sessions, and Inbox into cloud storage, then connect syllabus PDFs to Gemini.</p><span class="pill">Study data + files next</span></article></div>`;
+    const knowledgeLabel = knowledgeCloudReady ? 'Library + Inbox + study cloud' : 'Knowledge cloud unavailable';
+    return `<div class="settings-grid"><article class="card setting-card"><h3>Weekly study capacity</h3><p>The workload engine compares estimated required work with the time you realistically have.</p><label class="eyebrow" for="capacityInput">Hours / week</label><input id="capacityInput" type="number" min="1" max="80" step=".5" value="${state.semester.availableMinutesPerWeek/60}" style="width:100%;margin-top:7px"/></article><article class="card setting-card"><h3>Cloud academic data</h3><p>Semester, courses, assessments, planner tasks, work blocks, resources, Inbox, and study sessions use Appwrite.</p><span class="pill ${academicCloudReady?'success':''}">${academicLabel}</span> <span class="pill ${plannerCloudReady?'success':''}">${plannerLabel}</span> <span class="pill ${knowledgeCloudReady?'success':''}">${knowledgeLabel}</span></article><article class="card setting-card"><h3>One source of truth</h3><p>Academic objects and completed focus sessions now follow the same signed-in student across devices.</p><button class="btn secondary" data-route-jump="study">Open study history</button></article><article class="card setting-card"><h3>Next backend step</h3><p>Add Appwrite Storage for real PDF uploads, then send those documents through a server-side Gemini workflow.</p><span class="pill">Storage + Gemini next</span></article></div>`;
   }
 
   function bindPageEvents(){
     qsa('[data-route-jump]').forEach(b=>b.onclick=()=>setRoute(b.dataset.routeJump));
-    qsa('[data-start-focus]').forEach(b=>b.onclick=()=>{ const a=assessment(b.dataset.startFocus); if(!a)return; state.timer.context={courseId:a.courseId,topic:a.topics?.[0]||a.title}; state.timer.seconds=Math.min(45,a.remaining||25)*60; state.timer.running=false; save(); setRoute('study'); });
+    qsa('[data-start-focus]').forEach(b=>b.onclick=()=>{ const a=assessment(b.dataset.startFocus); if(!a)return; state.timer.context={courseId:a.courseId,topic:a.topics?.[0]||a.title}; state.timer.seconds=Math.min(45,a.remaining||25)*60; state.timer.initialSeconds=state.timer.seconds; state.timer.running=false; save(); setRoute('study'); });
     qsa('[data-plan]').forEach(b=>b.onclick=()=>planAssessment(b.dataset.plan));
     qsa('[data-course]').forEach(b=>b.onclick=()=>{activeCourseId=b.dataset.course; activeCourseTab='overview'; render();});
     qs('#backCourses')?.addEventListener('click',()=>{activeCourseId=null;render();});
@@ -271,14 +280,15 @@
     qsa('[data-task-done]').forEach(b=>b.onclick=()=>markTaskDone(b.dataset.taskDone));
     bindDragDrop();
     qs('#timerToggle')?.addEventListener('click',toggleTimer);
-    qs('#timerReset')?.addEventListener('click',()=>{stopTimer();state.timer.seconds=25*60;state.timer.running=false;save();render();});
+    qs('#timerReset')?.addEventListener('click',()=>{stopTimer();state.timer.seconds=25*60;state.timer.initialSeconds=25*60;state.timer.running=false;save();render();});
+    qs('#finishSession')?.addEventListener('click',finishStudySession);
     qs('#showAnswer')?.addEventListener('click',()=>qs('#practiceAnswer')?.classList.toggle('hidden'));
     qs('#nextQuestion')?.addEventListener('click',()=>{state.practiceIndex=(state.practiceIndex+1)%practiceBank.length;save();render();});
     qs('#librarySearch')?.addEventListener('input',e=>{const q=e.target.value.toLowerCase();qsa('[data-resource-text]').forEach(card=>card.style.display=card.dataset.resourceText.includes(q)?'':'none');});
-    qs('#addDemoResource')?.addEventListener('click',()=>{state.resources.unshift({id:uid('r'),courseId:state.courses[0]?.id||'',topic:state.courses[0]?.topics?.[0]||'General',type:'Note',title:'New captured note',description:'Demo note added locally',updated:'Now'});save();render();toast('Resource added to Library.');});
-    qs('#captureInbox')?.addEventListener('click',()=>{const el=qs('#inboxInput');const text=el.value.trim();if(!text)return;state.inbox.unshift({id:uid('i'),text,created:new Date().toISOString(),processed:false});save();render();toast('Captured to Inbox.');});
+    qs('#openAddResource')?.addEventListener('click',openResourceModal);
+    qs('#captureInbox')?.addEventListener('click',captureInboxItem);
     qsa('[data-organize]').forEach(b=>b.onclick=()=>{const i=state.inbox.find(x=>x.id===b.dataset.organize); if(!i)return; openQuickAdd(i.text, i.id);});
-    qsa('[data-archive]').forEach(b=>b.onclick=()=>{const i=state.inbox.find(x=>x.id===b.dataset.archive);if(i)i.processed=true;save();render();toast('Inbox item archived.');});
+    qsa('[data-archive]').forEach(b=>b.onclick=()=>archiveInboxItem(b.dataset.archive));
     qs('#capacityInput')?.addEventListener('change',e=>{state.semester.availableMinutesPerWeek=Math.round(Number(e.target.value||14)*60);save();toast('Weekly capacity updated.');});
   }
 
@@ -392,9 +402,57 @@
   }
 
   function toggleTimer(){ state.timer.running=!state.timer.running; save(); if(state.timer.running) startTimer(); else stopTimer(); render(); }
-  function startTimer(){ stopTimer(false); state.timer.running=true; timerHandle=setInterval(()=>{ if(!state.timer.running)return; state.timer.seconds=Math.max(0,state.timer.seconds-1); const el=qs('#timerDisplay'); if(el)el.textContent=formatTimer(state.timer.seconds); if(state.timer.seconds===0){ stopTimer(); state.timer.running=false; state.studySessions.push({id:uid('s'),courseId:state.timer.context.courseId,topic:state.timer.context.topic,completedAt:new Date().toISOString(),minutes:25}); save();toast('Focus session complete.');render(); } },1000); }
+  function startTimer(){ stopTimer(false); state.timer.running=true; if(!state.timer.initialSeconds||state.timer.initialSeconds<state.timer.seconds)state.timer.initialSeconds=state.timer.seconds; timerHandle=setInterval(()=>{ if(!state.timer.running)return; state.timer.seconds=Math.max(0,state.timer.seconds-1); const el=qs('#timerDisplay'); if(el)el.textContent=formatTimer(state.timer.seconds); if(state.timer.seconds===0){ stopTimer(); state.timer.running=false; const minutes=Math.max(1,Math.round((state.timer.initialSeconds||25*60)/60)); recordStudySession(minutes); } },1000); }
   function stopTimer(setFalse=true){ if(timerHandle)clearInterval(timerHandle);timerHandle=null;if(setFalse)state.timer.running=false; }
   function formatTimer(s){ const m=Math.floor(s/60), sec=s%60;return `${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`; }
+
+  function finishStudySession(){
+    const initial=state.timer.initialSeconds||25*60; const elapsed=Math.max(0,initial-state.timer.seconds);
+    if(elapsed<5)return toast('Start the focus timer before saving a session.');
+    stopTimer(); state.timer.running=false; recordStudySession(Math.max(1,Math.round(elapsed/60)));
+  }
+
+  async function recordStudySession(minutes){
+    const draft={id:uid('s'),courseId:state.timer.context.courseId,assessmentId:'',topic:state.timer.context.topic,completedAt:new Date().toISOString(),minutes,sourceType:'focus'};
+    try{
+      if(knowledgeCloudReady&&cloudUser&&cloudSemester){ const row=await window.studentHubCloud.createStudySession(cloudUser,cloudSemester,draft,draft.id); state.studySessions.unshift(rowToStudySession(row)); }
+      else state.studySessions.unshift(draft);
+      state.timer.seconds=25*60; state.timer.initialSeconds=25*60; save(); render(); updateCloudStatusCard(); toast(knowledgeCloudReady?'Focus session saved to Appwrite.':'Focus session complete.');
+    }catch(error){ console.error('Study session sync failed:',error); state.studySessions.unshift(draft); save(); render(); toast('Session saved locally; cloud study sync failed.'); }
+  }
+
+  function openResourceModal(){
+    if(!knowledgeCloudReady){toast('Library cloud sync is not ready. Check the resources table.');return;}
+    const form=qs('#addResourceForm'); form?.reset();
+    const select=qs('#resourceCourse'); if(select)select.innerHTML=state.courses.map(c=>`<option value="${c.id}">${esc(c.code)} · ${esc(c.name)}</option>`).join('');
+    qs('#resourceType').value='Note'; qs('#resourceTopic').value=state.courses[0]?.topics?.[0]||'General';
+    openModal(qs('#addResourceModal')); setTimeout(()=>qs('#resourceTitle')?.focus(),60);
+  }
+
+  async function confirmAddResource(event){
+    event?.preventDefault();
+    if(!cloudUser||!cloudSemester||!knowledgeCloudReady)return toast('Library cloud sync is not ready.');
+    const draft={id:uid('r'),courseId:qs('#resourceCourse').value,topic:qs('#resourceTopic').value.trim()||'General',type:qs('#resourceType').value,title:qs('#resourceTitle').value.trim(),description:qs('#resourceDescription').value.trim(),url:qs('#resourceUrl').value.trim(),sourceType:'manual'};
+    if(!draft.title)return toast('Resource title is required.');
+    const button=qs('#addResourceSubmit'); if(button){button.disabled=true;button.textContent='Saving…';}
+    try{ const row=await window.studentHubCloud.createResource(cloudUser,cloudSemester,draft,draft.id); state.resources.unshift(rowToResource(row)); save(); closeModals(); render(); updateCloudStatusCard(); toast('Resource saved to Appwrite.'); }
+    catch(error){console.error(error);toast('Could not save resource. Check the resources table.');}
+    finally{if(button){button.disabled=false;button.textContent='Add resource';}}
+  }
+
+  async function captureInboxItem(){
+    const el=qs('#inboxInput'); const text=el?.value.trim(); if(!text)return;
+    const draft={id:uid('i'),text,created:new Date().toISOString(),processed:false,sourceType:'capture'};
+    try{ if(knowledgeCloudReady&&cloudUser&&cloudSemester){const row=await window.studentHubCloud.createInboxItem(cloudUser,cloudSemester,draft,draft.id);state.inbox.unshift(rowToInbox(row));}else state.inbox.unshift(draft); save(); render(); updateCloudStatusCard(); toast(knowledgeCloudReady?'Captured to cloud Inbox.':'Captured locally; Inbox cloud unavailable.'); }
+    catch(error){console.error(error);toast('Could not capture to Appwrite Inbox.');}
+  }
+
+  async function archiveInboxItem(id){
+    const item=state.inbox.find(x=>x.id===id); if(!item)return;
+    const processedAt=new Date().toISOString();
+    try{ if(knowledgeCloudReady&&item.cloudId)await window.studentHubCloud.updateInboxItem(item.cloudId,{processed:true,processedAt}); item.processed=true; item.processedAt=processedAt; save(); render(); updateCloudStatusCard(); toast('Inbox item archived.'); }
+    catch(error){console.error(error);toast('Could not archive the cloud Inbox item.');}
+  }
 
   function openModal(modal){ qs('#modalBackdrop').classList.remove('hidden'); modal.classList.remove('hidden'); }
   function closeModals(){ qsa('.modal').forEach(m=>m.classList.add('hidden')); qs('#modalBackdrop').classList.add('hidden'); }
@@ -430,7 +488,7 @@
         state.assessments.push(draft);
       }
       const inboxId=qs('#quickAddInput').dataset.inboxId;
-      if(inboxId){const i=state.inbox.find(x=>x.id===inboxId);if(i)i.processed=true;}
+      if(inboxId){const i=state.inbox.find(x=>x.id===inboxId);if(i){const processedAt=new Date().toISOString();i.processed=true;i.processedAt=processedAt;if(knowledgeCloudReady&&i.cloudId){try{await window.studentHubCloud.updateInboxItem(i.cloudId,{processed:true,processedAt});}catch(error){console.error('Inbox organize update failed:',error);}}}}
       save(); closeModals(); render(); updateCloudStatusCard();
       toast(academicCloudReady?'Assessment saved to Appwrite and surfaced everywhere.':'Added locally; cloud assessment sync is unavailable.');
     } catch (error) {
@@ -525,6 +583,19 @@
     return { id:row.$id, cloudId:row.$id, legacyId:row.legacyId||'', courseId:row.courseId, assessmentId:row.assessmentId, taskId:row.taskId||'', title:row.title||'Work block', type:'work', start:row.start, end:row.end, status:row.status||'planned', sourceType:row.sourceType||'planner' };
   }
 
+
+  function rowToResource(row) {
+    return { id:row.$id, cloudId:row.$id, legacyId:row.legacyId||'', courseId:row.courseId, topic:row.topic||'General', type:row.type||'Note', title:row.title||'Untitled resource', description:row.description||'', url:row.url||'', sourceType:row.sourceType||'library', updated:timeAgo(row.$updatedAt||row.$createdAt||new Date()) };
+  }
+
+  function rowToInbox(row) {
+    return { id:row.$id, cloudId:row.$id, legacyId:row.legacyId||'', text:row.text||'', created:row.$createdAt||new Date().toISOString(), processed:Boolean(row.processed), processedAt:row.processedAt||'', sourceType:row.sourceType||'capture' };
+  }
+
+  function rowToStudySession(row) {
+    return { id:row.$id, cloudId:row.$id, legacyId:row.legacyId||'', courseId:row.courseId, assessmentId:row.assessmentId||'', topic:row.topic||'General', minutes:Number(row.minutes||0), completedAt:row.completedAt||row.$createdAt, sourceType:row.sourceType||'focus' };
+  }
+
   function applyCloudPlannerData(payload) {
     const tasks=Array.isArray(payload?.tasks)?payload.tasks:[];
     const blocks=Array.isArray(payload?.workBlocks)?payload.workBlocks:[];
@@ -534,9 +605,18 @@
     save(); render();
   }
 
+
+  function applyCloudKnowledgeData(payload){
+    state.resources=(Array.isArray(payload?.resources)?payload.resources:[]).map(rowToResource);
+    state.inbox=(Array.isArray(payload?.inbox)?payload.inbox:[]).map(rowToInbox);
+    state.studySessions=(Array.isArray(payload?.studySessions)?payload.studySessions:[]).map(rowToStudySession).sort((a,b)=>new Date(b.completedAt)-new Date(a.completedAt));
+    save(); render();
+  }
+
   function updateCloudStatusCard(){
     const title=qs('#cloudStatusTitle'), text=qs('#cloudStatusText'); if(!title||!text||!cloudUser)return;
-    if(academicCloudReady&&plannerCloudReady){ title.textContent='Academic + planner cloud synced'; text.textContent=`${state.semester.name}: ${state.courses.length} courses, ${state.assessments.length} assessments, ${(state.tasks||[]).filter(t=>t.status!=='done').length} open tasks and ${state.events.filter(e=>e.type==='work').length} planned work blocks.`; }
+    if(academicCloudReady&&plannerCloudReady&&knowledgeCloudReady){ title.textContent='Full semester cloud synced'; text.textContent=`${state.semester.name}: ${state.courses.length} courses, ${state.assessments.length} assessments, ${(state.tasks||[]).filter(t=>t.status!=='done').length} open tasks, ${state.resources.length} resources, ${state.inbox.filter(i=>!i.processed).length} Inbox items, and ${state.studySessions.length} study sessions.`; }
+    else if(academicCloudReady&&plannerCloudReady){ title.textContent='Academic + planner cloud synced'; text.textContent=`${state.semester.name}: academic and planner data are synced. Library/Inbox/study need resources, inbox_items, and study_sessions tables.`; }
     else if(academicCloudReady){ title.textContent='Academic cloud synced'; text.textContent=`${state.semester.name}: courses and assessments are synced. Planner cloud still needs tasks/work_blocks setup.`; }
   }
 
@@ -590,7 +670,7 @@
   }
 
   async function setCloudContext(user, semester) {
-    cloudUser=user||null; cloudSemester=semester||null; academicCloudReady=false; plannerCloudReady=false;
+    cloudUser=user||null; cloudSemester=semester||null; academicCloudReady=false; plannerCloudReady=false; knowledgeCloudReady=false;
     setUserContext(user?.$id, semester?.name || 'My Semester');
     if(!user||!semester||!window.studentHubCloud?.syncAcademicSeed) return {academicCloudReady:false,plannerCloudReady:false};
 
@@ -605,8 +685,13 @@
       applyCloudPlannerData(planner); plannerCloudReady=true;
     }catch(error){ console.error('Planner cloud sync failed:',error); plannerCloudReady=false; }
 
+    try{
+      const knowledge=await window.studentHubCloud.syncKnowledgeSeed(user,semester,state.resources||[],state.inbox||[],state.studySessions||[]);
+      applyCloudKnowledgeData(knowledge); knowledgeCloudReady=true;
+    }catch(error){ console.error('Knowledge cloud sync failed:',error); knowledgeCloudReady=false; }
+
     render(); updateCloudStatusCard();
-    return {academicCloudReady:true,plannerCloudReady,courses:state.courses.length,assessments:state.assessments.length,tasks:(state.tasks||[]).length,workBlocks:state.events.filter(e=>e.type==='work').length};
+    return {academicCloudReady:true,plannerCloudReady,knowledgeCloudReady,courses:state.courses.length,assessments:state.assessments.length,tasks:(state.tasks||[]).length,workBlocks:state.events.filter(e=>e.type==='work').length,resources:state.resources.length,inbox:state.inbox.filter(i=>!i.processed).length,studySessions:state.studySessions.length};
   }
 
   function openCourseModal() {
@@ -680,6 +765,10 @@
       state = loadState(activeStorageKey);
       if (!Array.isArray(state.tasks)) state.tasks = [];
       if (!Array.isArray(state.events)) state.events = [];
+      if (!Array.isArray(state.resources)) state.resources = [];
+      if (!Array.isArray(state.inbox)) state.inbox = [];
+      if (!Array.isArray(state.studySessions)) state.studySessions = [];
+      if (!state.timer.initialSeconds) state.timer.initialSeconds = state.timer.seconds || 25*60;
     }
     if (semesterName) state.semester.name = semesterName;
     save();
@@ -692,6 +781,7 @@
     cloudSemester = null;
     academicCloudReady = false;
     plannerCloudReady = false;
+    knowledgeCloudReady = false;
     activeStorageKey = BASE_STORAGE_KEY;
     state = loadState(activeStorageKey);
   }
@@ -712,6 +802,7 @@
   qs('#modalBackdrop').addEventListener('click',closeModals);
   qsa('.close-modal').forEach(b=>b.addEventListener('click',closeModals));
   qs('#addCourseForm')?.addEventListener('submit',confirmAddCourse);
+  qs('#addResourceForm')?.addEventListener('submit',confirmAddResource);
   qs('#fillExample').addEventListener('click',()=>{qs('#quickAddInput').value='Chem lab report Friday 6pm, probably 2 hours';});
   qs('#parseQuickAdd').addEventListener('click',()=>{const text=qs('#quickAddInput').value.trim();if(!text)return toast('Type something to capture first.');quickParsed=parseNatural(text);showQuickPreview(quickParsed);});
   qs('#confirmQuickAdd').addEventListener('click',confirmQuick);

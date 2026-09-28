@@ -228,6 +228,28 @@
     </form>
   </section>
 
+  <section class="modal hidden wide-modal" id="addResourceModal" role="dialog" aria-modal="true" aria-labelledby="addResourceTitle">
+    <div class="modal-header">
+      <div><span class="eyebrow">Cloud library</span><h2 id="addResourceTitle">Add a resource</h2></div>
+      <button class="icon-btn close-modal" aria-label="Close">×</button>
+    </div>
+    <p class="modal-intro">Save notes, links, and PDF references now. Real file uploads arrive in the next Storage milestone.</p>
+    <form id="addResourceForm" class="course-form">
+      <div class="course-form-grid">
+        <label><span>Type *</span><select id="resourceType"><option>Note</option><option>Link</option><option>PDF</option></select></label>
+        <label><span>Course *</span><select id="resourceCourse" required></select></label>
+        <label class="course-form-wide"><span>Title *</span><input id="resourceTitle" maxlength="200" required placeholder="Lecture 07 — Eigenvalues" /></label>
+        <label><span>Topic</span><input id="resourceTopic" maxlength="120" placeholder="Eigenvalues" /></label>
+        <label><span>URL</span><input id="resourceUrl" type="url" maxlength="500" placeholder="https://..." /></label>
+        <label class="course-form-wide"><span>Description</span><textarea id="resourceDescription" rows="4" maxlength="500" placeholder="What this resource contains or why it matters..."></textarea></label>
+      </div>
+      <div class="modal-actions">
+        <button class="btn secondary close-modal" type="button">Cancel</button>
+        <button class="btn primary" id="addResourceSubmit" type="submit">Add resource</button>
+      </div>
+    </form>
+  </section>
+
   <section class="modal search-modal hidden" id="searchModal" role="dialog" aria-modal="true" aria-labelledby="searchTitle">
     <div class="search-box-wrap">
       <span>⌕</span><input id="searchInput" autocomplete="off" placeholder="Search your semester..." aria-label="Search your semester" />

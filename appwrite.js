@@ -9,7 +9,10 @@
     coursesTableId: 'courses',
     assessmentsTableId: 'assessments',
     tasksTableId: 'tasks',
-    workBlocksTableId: 'work_blocks'
+    workBlocksTableId: 'work_blocks',
+    resourcesTableId: 'resources',
+    inboxTableId: 'inbox_items',
+    studySessionsTableId: 'study_sessions'
   });
 
   if (!window.Appwrite) {
@@ -139,10 +142,45 @@
     };
   }
 
+
+  function resourcePayload(user, semester, resource, legacyId='') {
+    return {
+      userId:user.$id, semesterId:semester.$id, legacyId:String(legacyId || resource.legacyId || ''),
+      courseId:String(resource.courseId || ''), topic:String(resource.topic || 'General').slice(0,120),
+      type:String(resource.type || 'Note').slice(0,32), title:String(resource.title || 'Untitled resource').slice(0,200),
+      description:String(resource.description || '').slice(0,500), url:String(resource.url || '').slice(0,500),
+      sourceType:String(resource.sourceType || 'library').slice(0,32)
+    };
+  }
+
+  function inboxPayload(user, semester, item, legacyId='') {
+    const data = {
+      userId:user.$id, semesterId:semester.$id, legacyId:String(legacyId || item.legacyId || ''),
+      text:String(item.text || '').slice(0,10000), processed:Boolean(item.processed),
+      sourceType:String(item.sourceType || 'capture').slice(0,32)
+    };
+    if (item.processedAt) data.processedAt = new Date(item.processedAt).toISOString();
+    return data;
+  }
+
+  function studySessionPayload(user, semester, session, legacyId='') {
+    return {
+      userId:user.$id, semesterId:semester.$id, legacyId:String(legacyId || session.legacyId || ''),
+      courseId:String(session.courseId || ''), assessmentId:String(session.assessmentId || ''),
+      topic:String(session.topic || 'General').slice(0,120),
+      minutes:Math.max(1,Math.round(Number(session.minutes)||1)),
+      completedAt:new Date(session.completedAt || new Date()).toISOString(),
+      sourceType:String(session.sourceType || 'focus').slice(0,32)
+    };
+  }
+
   async function listCourses(semesterId) { return (await listRows(CONFIG.coursesTableId)).filter(r=>r.semesterId===semesterId); }
   async function listAssessments(semesterId) { return (await listRows(CONFIG.assessmentsTableId)).filter(r=>r.semesterId===semesterId); }
   async function listTasks(semesterId) { return (await listRows(CONFIG.tasksTableId)).filter(r=>r.semesterId===semesterId); }
   async function listWorkBlocks(semesterId) { return (await listRows(CONFIG.workBlocksTableId)).filter(r=>r.semesterId===semesterId); }
+  async function listResources(semesterId) { return (await listRows(CONFIG.resourcesTableId)).filter(r=>r.semesterId===semesterId); }
+  async function listInboxItems(semesterId) { return (await listRows(CONFIG.inboxTableId)).filter(r=>r.semesterId===semesterId); }
+  async function listStudySessions(semesterId) { return (await listRows(CONFIG.studySessionsTableId)).filter(r=>r.semesterId===semesterId); }
 
   async function createCourse(user, semester, course, legacyId='') {
     return tablesDB.createRow({ databaseId:CONFIG.databaseId, tableId:CONFIG.coursesTableId, rowId:Appwrite.ID.unique(), data:coursePayload(user,semester,course,legacyId), permissions:privatePermissions(user.$id) });
@@ -156,11 +194,22 @@
   async function createWorkBlock(user, semester, block, legacyId='') {
     return tablesDB.createRow({ databaseId:CONFIG.databaseId, tableId:CONFIG.workBlocksTableId, rowId:Appwrite.ID.unique(), data:workBlockPayload(user,semester,block,legacyId), permissions:privatePermissions(user.$id) });
   }
+  async function createResource(user, semester, resource, legacyId='') {
+    return tablesDB.createRow({ databaseId:CONFIG.databaseId, tableId:CONFIG.resourcesTableId, rowId:Appwrite.ID.unique(), data:resourcePayload(user,semester,resource,legacyId), permissions:privatePermissions(user.$id) });
+  }
+  async function createInboxItem(user, semester, item, legacyId='') {
+    return tablesDB.createRow({ databaseId:CONFIG.databaseId, tableId:CONFIG.inboxTableId, rowId:Appwrite.ID.unique(), data:inboxPayload(user,semester,item,legacyId), permissions:privatePermissions(user.$id) });
+  }
+  async function createStudySession(user, semester, session, legacyId='') {
+    return tablesDB.createRow({ databaseId:CONFIG.databaseId, tableId:CONFIG.studySessionsTableId, rowId:Appwrite.ID.unique(), data:studySessionPayload(user,semester,session,legacyId), permissions:privatePermissions(user.$id) });
+  }
 
   async function updateCourse(rowId, patch) { return tablesDB.updateRow({ databaseId:CONFIG.databaseId, tableId:CONFIG.coursesTableId, rowId, data:patch }); }
   async function updateAssessment(rowId, patch) { return tablesDB.updateRow({ databaseId:CONFIG.databaseId, tableId:CONFIG.assessmentsTableId, rowId, data:patch }); }
   async function updateTask(rowId, patch) { return tablesDB.updateRow({ databaseId:CONFIG.databaseId, tableId:CONFIG.tasksTableId, rowId, data:patch }); }
   async function updateWorkBlock(rowId, patch) { return tablesDB.updateRow({ databaseId:CONFIG.databaseId, tableId:CONFIG.workBlocksTableId, rowId, data:patch }); }
+  async function updateResource(rowId, patch) { return tablesDB.updateRow({ databaseId:CONFIG.databaseId, tableId:CONFIG.resourcesTableId, rowId, data:patch }); }
+  async function updateInboxItem(rowId, patch) { return tablesDB.updateRow({ databaseId:CONFIG.databaseId, tableId:CONFIG.inboxTableId, rowId, data:patch }); }
 
   async function syncAcademicSeed(user, semester, localCourses=[], localAssessments=[]) {
     let cloudCourses = await listCourses(semester.$id);
@@ -214,12 +263,47 @@
     return { tasks:cloudTasks, workBlocks:cloudBlocks };
   }
 
+
+  async function syncKnowledgeSeed(user, semester, localResources=[], localInbox=[], localStudySessions=[]) {
+    let cloudResources = await listResources(semester.$id);
+    const resourceIds = new Set(cloudResources.map(r=>r.$id));
+    const resourceLegacy = new Set(cloudResources.map(r=>r.legacyId).filter(Boolean));
+    for (const resource of localResources) {
+      const localId=String(resource.id||'');
+      if (resourceIds.has(localId) || resourceLegacy.has(localId)) continue;
+      await createResource(user,semester,resource,localId);
+    }
+    cloudResources = await listResources(semester.$id);
+
+    let cloudInbox = await listInboxItems(semester.$id);
+    const inboxIds = new Set(cloudInbox.map(r=>r.$id));
+    const inboxLegacy = new Set(cloudInbox.map(r=>r.legacyId).filter(Boolean));
+    for (const item of localInbox) {
+      const localId=String(item.id||'');
+      if (inboxIds.has(localId) || inboxLegacy.has(localId)) continue;
+      await createInboxItem(user,semester,item,localId);
+    }
+    cloudInbox = await listInboxItems(semester.$id);
+
+    let cloudSessions = await listStudySessions(semester.$id);
+    const sessionIds = new Set(cloudSessions.map(r=>r.$id));
+    const sessionLegacy = new Set(cloudSessions.map(r=>r.legacyId).filter(Boolean));
+    for (const session of localStudySessions) {
+      const localId=String(session.id||'');
+      if (sessionIds.has(localId) || sessionLegacy.has(localId)) continue;
+      await createStudySession(user,semester,session,localId);
+    }
+    cloudSessions = await listStudySessions(semester.$id);
+
+    return { resources:cloudResources, inbox:cloudInbox, studySessions:cloudSessions };
+  }
+
   window.studentHubCloud = Object.freeze({
     ready:true, config:CONFIG, client, account, tablesDB,
     getCurrentUser, signUp, signIn, signOut, listSemesters, ensureSemester,
-    listCourses, listAssessments, listTasks, listWorkBlocks,
-    createCourse, createAssessment, createTask, createWorkBlock,
-    updateCourse, updateAssessment, updateTask, updateWorkBlock,
-    syncAcademicSeed, syncPlannerSeed
+    listCourses, listAssessments, listTasks, listWorkBlocks, listResources, listInboxItems, listStudySessions,
+    createCourse, createAssessment, createTask, createWorkBlock, createResource, createInboxItem, createStudySession,
+    updateCourse, updateAssessment, updateTask, updateWorkBlock, updateResource, updateInboxItem,
+    syncAcademicSeed, syncPlannerSeed, syncKnowledgeSeed
   });
 })();

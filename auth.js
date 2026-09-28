@@ -178,7 +178,12 @@
       currentSemester = null;
     }
 
-    app?.setUserContext?.(user.$id, currentSemester?.name || 'My Semester');
+    let academicSync = { academicCloudReady: false };
+    if (app?.setCloudContext) {
+      academicSync = await app.setCloudContext(user, currentSemester);
+    } else {
+      app?.setUserContext?.(user.$id, currentSemester?.name || 'My Semester');
+    }
 
     if (profileAvatar) {
       profileAvatar.textContent = initials(user);
@@ -188,12 +193,16 @@
     if (profileEmail) profileEmail.textContent = user.email || '';
 
     if (cloudStatusTitle) {
-      cloudStatusTitle.textContent = currentSemester ? 'Semester connected' : 'Account connected';
+      cloudStatusTitle.textContent = academicSync?.academicCloudReady
+        ? 'Academic cloud synced'
+        : (currentSemester ? 'Semester connected' : 'Account connected');
     }
     if (cloudStatusText) {
-      cloudStatusText.textContent = currentSemester
-        ? `${currentSemester.name} is stored in Appwrite. Course and task demo data is still local for now.`
-        : 'Signed in with Appwrite. Semester sync needs attention.';
+      cloudStatusText.textContent = academicSync?.academicCloudReady
+        ? `${currentSemester.name}: ${academicSync.courses || 0} courses and ${academicSync.assessments || 0} assessments are stored in Appwrite.`
+        : (currentSemester
+          ? `${currentSemester.name} is connected, but Courses/Assessments cloud sync is not ready yet. Check the Appwrite table setup.`
+          : 'Signed in with Appwrite. Semester sync needs attention.');
     }
 
     loading?.classList.add('hidden');

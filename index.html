@@ -203,6 +203,31 @@
     </div>
   </section>
 
+  <section class="modal hidden wide-modal" id="addCourseModal" role="dialog" aria-modal="true" aria-labelledby="addCourseTitle">
+    <div class="modal-header">
+      <div><span class="eyebrow">Cloud course</span><h2 id="addCourseTitle">Add a course</h2></div>
+      <button class="icon-btn close-modal" aria-label="Close">×</button>
+    </div>
+    <p class="modal-intro">This course will be stored in Appwrite and become available anywhere you sign in.</p>
+    <form id="addCourseForm" class="course-form">
+      <div class="course-form-grid">
+        <label><span>Course code *</span><input id="courseCode" maxlength="32" required placeholder="CS301" /></label>
+        <label><span>Course name *</span><input id="courseName" maxlength="120" required placeholder="Algorithms" /></label>
+        <label><span>Instructor</span><input id="courseTeacher" maxlength="120" placeholder="Prof. Kim" /></label>
+        <label><span>Room</span><input id="courseRoom" maxlength="80" placeholder="B204" /></label>
+        <label class="course-form-wide"><span>Schedule</span><input id="courseSchedule" maxlength="160" placeholder="Tue / Thu · 10:00" /></label>
+        <label><span>Current grade %</span><input id="courseGrade" type="number" min="0" max="100" step="0.1" value="0" /></label>
+        <label><span>Target grade %</span><input id="courseTarget" type="number" min="0" max="100" step="0.1" value="0" /></label>
+        <label><span>Accent color</span><input id="courseColor" type="color" value="#6d63ed" /></label>
+        <label class="course-form-wide"><span>Topics</span><input id="courseTopics" placeholder="Recursion, Graphs, Dynamic Programming" /></label>
+      </div>
+      <div class="modal-actions">
+        <button class="btn secondary close-modal" type="button">Cancel</button>
+        <button class="btn primary" id="addCourseSubmit" type="submit">Add course</button>
+      </div>
+    </form>
+  </section>
+
   <section class="modal search-modal hidden" id="searchModal" role="dialog" aria-modal="true" aria-labelledby="searchTitle">
     <div class="search-box-wrap">
       <span>⌕</span><input id="searchInput" autocomplete="off" placeholder="Search your semester..." aria-label="Search your semester" />

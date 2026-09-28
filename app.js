@@ -81,6 +81,9 @@
   let quickParsed = null;
   let syllabusParsed = [];
   let timerHandle = null;
+  let cloudUser = null;
+  let cloudSemester = null;
+  let academicCloudReady = false;
 
   function save(){ localStorage.setItem(activeStorageKey, JSON.stringify(state)); updateBadges(); }
   function course(id){ return state.courses.find(c=>c.id===id); }
@@ -201,9 +204,9 @@
 
   function renderCourses(){
     if(activeCourseId){ return renderCourseDetail(activeCourseId); }
-    return `<div class="section-head" style="margin-top:0"><div><h2>Your course graph</h2><p>Each course connects work, topics, materials, notes and grades.</p></div><button class="btn secondary" id="openImport">Import syllabus</button></div><div class="course-grid">${state.courses.map(c=>{
+    return `<div class="section-head" style="margin-top:0"><div><h2>Your course graph</h2><p>Courses and assessments now sync through Appwrite.</p></div><div class="button-row"><button class="btn secondary" id="openImport">Import syllabus</button><button class="btn primary" id="openAddCourse">+ Add course</button></div></div><div class="course-grid">${state.courses.map(c=>{
       const upcoming=state.assessments.filter(a=>a.courseId===c.id&&a.status!=='done').sort((a,b)=>new Date(a.due)-new Date(b.due));
-      return `<article class="card course-card" data-course="${c.id}" style="--course-color:${c.color};--progress:${Math.min(100,c.grade)}%"><span class="pill"><span class="course-dot" style="--course-color:${c.color}"></span> ${esc(c.code)}</span><h3>${esc(c.name)}</h3><p>${esc(c.teacher)} · ${esc(c.schedule)}</p><div class="progress-track"><span></span></div><div class="course-meta"><span>${c.grade}% current</span><span>${upcoming[0]?`${esc(upcoming[0].title)} · ${humanDue(upcoming[0].due)}`:'No upcoming work'}</span></div></article>`
+      return `<article class="card course-card" data-course="${c.id}" style="--course-color:${c.color};--progress:${Math.min(100,c.grade)}%"><span class="pill"><span class="course-dot" style="--course-color:${c.color}"></span> ${esc(c.code)}</span><h3>${esc(c.name)}</h3><p>${esc(c.teacher||'No instructor yet')} · ${esc(c.schedule||'Schedule not set')}</p><div class="progress-track"><span></span></div><div class="course-meta"><span>${c.grade}% current</span><span>${upcoming[0]?`${esc(upcoming[0].title)} · ${humanDue(upcoming[0].due)}`:'No upcoming work'}</span></div></article>`
     }).join('')}</div>`;
   }
   function renderCourseDetail(id){
@@ -241,7 +244,9 @@
   }
 
   function renderSettings(){
-    return `<div class="settings-grid"><article class="card setting-card"><h3>Weekly study capacity</h3><p>The workload engine compares estimated required work with the time you realistically have.</p><label class="eyebrow" for="capacityInput">Hours / week</label><input id="capacityInput" type="number" min="1" max="80" step=".5" value="${state.semester.availableMinutesPerWeek/60}" style="width:100%;margin-top:7px"/></article><article class="card setting-card"><h3>Demo data</h3><p>Reset the browser prototype back to the original sample semester.</p><button class="btn danger" id="resetDemo">Reset demo data</button></article><article class="card setting-card"><h3>Cloud account</h3><p>Authentication and semester metadata now use Appwrite. Course, assessment, planner, and study demo data will move to cloud tables in the next migration.</p><span class="pill success">Auth + semester cloud</span></article><article class="card setting-card"><h3>Next backend step</h3><p>Move Courses and Assessments into Appwrite so Today and Planner can become fully multi-device.</p><button class="btn secondary" data-route-jump="courses">Review course data</button></article></div>`;
+    const cloudLabel = academicCloudReady ? 'Courses + assessments cloud' : 'Academic cloud unavailable';
+    const cloudClass = academicCloudReady ? 'success' : '';
+    return `<div class="settings-grid"><article class="card setting-card"><h3>Weekly study capacity</h3><p>The workload engine compares estimated required work with the time you realistically have.</p><label class="eyebrow" for="capacityInput">Hours / week</label><input id="capacityInput" type="number" min="1" max="80" step=".5" value="${state.semester.availableMinutesPerWeek/60}" style="width:100%;margin-top:7px"/></article><article class="card setting-card"><h3>Cloud academic data</h3><p>Semester, courses, and assessments are stored in Appwrite. Planner blocks, resources, review queues, and focus history are still local in this milestone.</p><span class="pill ${cloudClass}">${cloudLabel}</span></article><article class="card setting-card"><h3>One source of truth</h3><p>An assessment created through Quick Add or syllabus import is written once to Appwrite and then appears across Today, Planner, and Courses.</p><button class="btn secondary" data-route-jump="courses">Review cloud courses</button></article><article class="card setting-card"><h3>Next backend step</h3><p>Move planner work blocks and resources to cloud storage, then connect syllabus PDFs to Gemini.</p><span class="pill">Planner + files next</span></article></div>`;
   }
 
   function bindPageEvents(){
@@ -252,6 +257,7 @@
     qs('#backCourses')?.addEventListener('click',()=>{activeCourseId=null;render();});
     qsa('[data-course-tab]').forEach(b=>b.onclick=()=>{activeCourseTab=b.dataset.courseTab;render();});
     qs('#openImport')?.addEventListener('click',openImport);
+    qs('#openAddCourse')?.addEventListener('click',openCourseModal);
     qs('#autoPlan')?.addEventListener('click',autoPlan);
     bindDragDrop();
     qs('#timerToggle')?.addEventListener('click',toggleTimer);
@@ -259,12 +265,11 @@
     qs('#showAnswer')?.addEventListener('click',()=>qs('#practiceAnswer')?.classList.toggle('hidden'));
     qs('#nextQuestion')?.addEventListener('click',()=>{state.practiceIndex=(state.practiceIndex+1)%practiceBank.length;save();render();});
     qs('#librarySearch')?.addEventListener('input',e=>{const q=e.target.value.toLowerCase();qsa('[data-resource-text]').forEach(card=>card.style.display=card.dataset.resourceText.includes(q)?'':'none');});
-    qs('#addDemoResource')?.addEventListener('click',()=>{state.resources.unshift({id:uid('r'),courseId:'alg',topic:'Dynamic Programming',type:'Note',title:'New captured note',description:'Demo note added locally',updated:'Now'});save();render();toast('Resource added to Library.');});
+    qs('#addDemoResource')?.addEventListener('click',()=>{state.resources.unshift({id:uid('r'),courseId:state.courses[0]?.id||'',topic:state.courses[0]?.topics?.[0]||'General',type:'Note',title:'New captured note',description:'Demo note added locally',updated:'Now'});save();render();toast('Resource added to Library.');});
     qs('#captureInbox')?.addEventListener('click',()=>{const el=qs('#inboxInput');const text=el.value.trim();if(!text)return;state.inbox.unshift({id:uid('i'),text,created:new Date().toISOString(),processed:false});save();render();toast('Captured to Inbox.');});
     qsa('[data-organize]').forEach(b=>b.onclick=()=>{const i=state.inbox.find(x=>x.id===b.dataset.organize); if(!i)return; openQuickAdd(i.text, i.id);});
     qsa('[data-archive]').forEach(b=>b.onclick=()=>{const i=state.inbox.find(x=>x.id===b.dataset.archive);if(i)i.processed=true;save();render();toast('Inbox item archived.');});
     qs('#capacityInput')?.addEventListener('change',e=>{state.semester.availableMinutesPerWeek=Math.round(Number(e.target.value||14)*60);save();toast('Weekly capacity updated.');});
-    qs('#resetDemo')?.addEventListener('click',()=>{if(confirm('Reset all demo data in this browser?')){stopTimer();state=seedState();save();render();toast('Demo reset.');}});
   }
 
   function planAssessment(id){
@@ -319,7 +324,26 @@
     return {courseId:c.id,title:title[0].toUpperCase()+title.slice(1),type,due:due.toISOString(),effort,confidence:Math.round(74 + Math.random()*17)};
   }
   function showQuickPreview(p){ const c=course(p.courseId); qs('#parsePreview').innerHTML=`<div class="parse-grid"><div class="parse-field"><span>Course</span><strong>${esc(c.name)}</strong></div><div class="parse-field"><span>Type</span><strong>${esc(p.type)}</strong></div><div class="parse-field"><span>Due</span><strong>${fmtDate(p.due,{weekday:'short',month:'short',day:'numeric'})} · ${fmtTime(p.due)}</strong></div><div class="parse-field"><span>Estimated effort</span><strong>${formatMinutes(p.effort)}</strong></div></div><p style="margin:10px 2px 0;color:var(--muted);font-size:10px">Local demo parser · estimated confidence ${p.confidence}% · verify before saving.</p>`; qs('#parsePreview').classList.remove('hidden'); qs('#confirmQuickAdd').classList.remove('hidden'); }
-  function confirmQuick(){ if(!quickParsed)return; const p=quickParsed; const id=uid('a'); state.assessments.push({id,courseId:p.courseId,title:p.title,type:p.type,due:p.due,effort:p.effort,remaining:p.effort,status:'not_started',weight:5,topics:[]}); const inboxId=qs('#quickAddInput').dataset.inboxId;if(inboxId){const i=state.inbox.find(x=>x.id===inboxId);if(i)i.processed=true;} save(); closeModals(); render(); toast('Added once — now visible across Today, Planner and Course.'); }
+  async function confirmQuick(){
+    if(!quickParsed)return;
+    const p=quickParsed;
+    const draft={id:uid('a'),courseId:p.courseId,title:p.title,type:p.type,due:p.due,effort:p.effort,remaining:p.effort,status:'not_started',weight:5,topics:[],sourceType:'quick_add'};
+    try {
+      if (academicCloudReady && cloudUser && cloudSemester) {
+        const row = await window.studentHubCloud.createAssessment(cloudUser, cloudSemester, draft, draft.courseId, draft.id);
+        state.assessments.push(rowToAssessment(row));
+      } else {
+        state.assessments.push(draft);
+      }
+      const inboxId=qs('#quickAddInput').dataset.inboxId;
+      if(inboxId){const i=state.inbox.find(x=>x.id===inboxId);if(i)i.processed=true;}
+      save(); closeModals(); render();
+      toast(academicCloudReady?'Assessment saved to Appwrite and surfaced everywhere.':'Added locally; cloud assessment sync is unavailable.');
+    } catch (error) {
+      console.error(error);
+      toast('Could not save the assessment to Appwrite. Check the assessments table setup.');
+    }
+  }
 
   function openImport(){
     const tomorrow=addDays(new Date(),1), d5=addDays(new Date(),5), d12=addDays(new Date(),12);
@@ -331,7 +355,28 @@
     lines.forEach(line=>{ const lower=line.toLowerCase(); if(!/due|exam|quiz|assignment|project|problem set|report/.test(lower))return; const dm=line.match(/(20\d{2}-\d{2}-\d{2})(?:\s+(\d{1,2}:\d{2}))?/); if(!dm)return; const effort=line.match(/estimated\s+(\d+(?:\.\d+)?)\s*(h|hours?|m|minutes?)/i); let mins=60;if(effort)mins=/^h/.test(effort[2].toLowerCase())?Number(effort[1])*60:Number(effort[1]); let title=line.split(/\bdue\b/i)[0].replace(/^[-•]\s*/,'').trim(); let type=/exam|midterm|final/i.test(title)?'Exam':/quiz/i.test(title)?'Quiz':/project/i.test(title)?'Project':'Assignment';out.push({courseId:c.id,title,type,due:new Date(`${dm[1]}T${dm[2]||'23:59'}:00`).toISOString(),effort:Math.round(mins)}); }); return out;
   }
   function showSyllabusPreview(items){ qs('#syllabusPreview').innerHTML=`<div class="detected-list">${items.map(i=>`<div class="detected-item"><strong>${esc(i.title)}</strong><br><span style="color:var(--muted)">${esc(courseName(i.courseId))} · ${i.type} · ${fmtDate(i.due,{month:'short',day:'numeric'})} ${fmtTime(i.due)} · ${formatMinutes(i.effort)}</span></div>`).join('')}</div><p style="margin:10px 2px 0;color:var(--muted);font-size:10px">Detected locally. Production would preserve page/source provenance and confidence for every item.</p>`; qs('#syllabusPreview').classList.remove('hidden'); qs('#confirmSyllabus').classList.toggle('hidden',!items.length); }
-  function confirmSyllabus(){ syllabusParsed.forEach(p=>state.assessments.push({id:uid('a'),courseId:p.courseId,title:p.title,type:p.type,due:p.due,effort:p.effort,remaining:p.effort,status:'not_started',weight:5,topics:[]})); save(); closeModals(); render(); toast(`Imported ${syllabusParsed.length} detected assessment${syllabusParsed.length!==1?'s':''}.`); }
+  async function confirmSyllabus(){
+    if (!syllabusParsed.length) return;
+    let imported=0;
+    try {
+      for (const p of syllabusParsed) {
+        const draft={id:uid('a'),courseId:p.courseId,title:p.title,type:p.type,due:p.due,effort:p.effort,remaining:p.effort,status:'not_started',weight:5,topics:[],sourceType:'syllabus_local'};
+        if (academicCloudReady && cloudUser && cloudSemester) {
+          const row=await window.studentHubCloud.createAssessment(cloudUser,cloudSemester,draft,draft.courseId,draft.id);
+          state.assessments.push(rowToAssessment(row));
+        } else {
+          state.assessments.push(draft);
+        }
+        imported++;
+      }
+      save(); closeModals(); render();
+      toast(`Imported ${imported} assessment${imported!==1?'s':''}${academicCloudReady?' to Appwrite':''}.`);
+    } catch (error) {
+      console.error(error);
+      save(); render();
+      toast(`Imported ${imported}, then cloud sync failed. Check the assessments table setup.`);
+    }
+  }
 
   function openSearch(){ openModal(qs('#searchModal')); qs('#searchInput').value=''; renderSearch(''); setTimeout(()=>qs('#searchInput').focus(),60); }
   function renderSearch(query){ const q=query.trim().toLowerCase(); const items=[]; state.courses.forEach(c=>items.push({type:'Course',icon:'◫',title:c.name,meta:c.code,id:c.id,text:(c.name+' '+c.code+' '+c.topics.join(' ')).toLowerCase()})); state.assessments.forEach(a=>items.push({type:a.type,icon:'✓',title:a.title,meta:courseName(a.courseId)+' · '+humanDue(a.due),id:a.id,text:(a.title+' '+courseName(a.courseId)+' '+(a.topics||[]).join(' ')).toLowerCase()})); state.resources.forEach(r=>items.push({type:r.type,icon:r.type==='PDF'?'▤':'⌁',title:r.title,meta:courseName(r.courseId)+' · '+r.topic,id:r.id,text:(r.title+' '+courseName(r.courseId)+' '+r.topic).toLowerCase()})); const filtered=items.filter(i=>!q||i.text.includes(q)).slice(0,12); qs('#searchResults').innerHTML=filtered.length?filtered.map(i=>`<button class="search-result" data-search-type="${i.type}" data-search-id="${i.id}"><span class="search-result-icon">${i.icon}</span><div><strong>${esc(i.title)}</strong><small>${esc(i.meta)}</small></div><small>${esc(i.type)}</small></button>`).join(''):`<div class="empty-state" style="min-height:160px"><p>No matching semester object.</p></div>`; qsa('.search-result').forEach(b=>b.onclick=()=>{const type=b.dataset.searchType;if(type==='Course'){activeCourseId=b.dataset.searchId;activeCourseTab='overview';state.route='courses';}else if(['PDF','Note','Link'].includes(type)){state.route='library';}else{state.route='planner';}save();closeModals();render();}); }
@@ -341,6 +386,179 @@
   function timeAgo(date){ const m=Math.max(0,Math.round((Date.now()-new Date(date))/60000)); if(m<1)return 'just now'; if(m<60)return `${m}m ago`;const h=Math.floor(m/60);if(h<24)return `${h}h ago`;return `${Math.floor(h/24)}d ago`; }
   function toast(msg){ const el=document.createElement('div');el.className='toast';el.textContent=msg;qs('#toastStack').appendChild(el);setTimeout(()=>el.remove(),3200); }
   function updateBadges(){ const n=state.inbox.filter(i=>!i.processed).length; const b=qs('#inboxBadge'); if(!b)return;b.textContent=n;b.classList.toggle('visible',n>0); }
+
+
+  function rowToCourse(row) {
+    return {
+      id: row.$id,
+      cloudId: row.$id,
+      legacyId: row.legacyId || '',
+      code: row.code || 'COURSE',
+      name: row.name || 'Untitled course',
+      teacher: row.teacher || '',
+      room: row.room || '',
+      color: row.color || '#6d63ed',
+      schedule: row.schedule || '',
+      grade: Number(row.grade || 0),
+      target: Number(row.target || 0),
+      topics: Array.isArray(row.topics) ? row.topics : []
+    };
+  }
+
+  function rowToAssessment(row) {
+    return {
+      id: row.$id,
+      cloudId: row.$id,
+      legacyId: row.legacyId || '',
+      courseId: row.courseId,
+      title: row.title || 'Untitled assessment',
+      type: row.type || 'Assignment',
+      due: row.due,
+      effort: Number(row.effort || 0),
+      remaining: Number(row.remaining ?? row.effort ?? 0),
+      status: row.status || 'not_started',
+      weight: Number(row.weight || 0),
+      topics: Array.isArray(row.topics) ? row.topics : [],
+      sourceType: row.sourceType || 'manual'
+    };
+  }
+
+  function remapDependentLocalData(courseMap, assessmentMap) {
+    const mapCourse = id => courseMap.get(id) || id;
+    const mapAssessment = id => assessmentMap.get(id) || id;
+
+    state.events.forEach(event => {
+      if (event.courseId) event.courseId = mapCourse(event.courseId);
+      if (event.assessmentId) event.assessmentId = mapAssessment(event.assessmentId);
+    });
+    state.resources.forEach(resource => {
+      if (resource.courseId) resource.courseId = mapCourse(resource.courseId);
+    });
+    state.review.forEach(item => {
+      if (item.courseId) item.courseId = mapCourse(item.courseId);
+    });
+    state.studySessions.forEach(session => {
+      if (session.courseId) session.courseId = mapCourse(session.courseId);
+    });
+    if (state.timer?.context?.courseId) {
+      state.timer.context.courseId = mapCourse(state.timer.context.courseId);
+    }
+    practiceBank.forEach(question => {
+      if (question.courseId) question.courseId = mapCourse(question.courseId);
+    });
+    if (activeCourseId) activeCourseId = mapCourse(activeCourseId);
+  }
+
+  function applyCloudAcademicData(payload) {
+    const cloudCourses = Array.isArray(payload?.courses) ? payload.courses : [];
+    const cloudAssessments = Array.isArray(payload?.assessments) ? payload.assessments : [];
+
+    const courseMap = new Map();
+    cloudCourses.forEach(row => {
+      courseMap.set(row.$id, row.$id);
+      if (row.legacyId) courseMap.set(row.legacyId, row.$id);
+    });
+
+    const assessmentMap = new Map();
+    cloudAssessments.forEach(row => {
+      assessmentMap.set(row.$id, row.$id);
+      if (row.legacyId) assessmentMap.set(row.legacyId, row.$id);
+    });
+
+    remapDependentLocalData(courseMap, assessmentMap);
+    state.courses = cloudCourses.map(rowToCourse);
+    state.assessments = cloudAssessments.map(rowToAssessment);
+    save();
+    render();
+  }
+
+  async function setCloudContext(user, semester) {
+    cloudUser = user || null;
+    cloudSemester = semester || null;
+    academicCloudReady = false;
+
+    setUserContext(user?.$id, semester?.name || 'My Semester');
+
+    if (!user || !semester || !window.studentHubCloud?.syncAcademicSeed) {
+      return { academicCloudReady: false };
+    }
+
+    try {
+      const payload = await window.studentHubCloud.syncAcademicSeed(
+        user,
+        semester,
+        state.courses,
+        state.assessments
+      );
+      applyCloudAcademicData(payload);
+      academicCloudReady = true;
+      render();
+      return { academicCloudReady: true, courses: state.courses.length, assessments: state.assessments.length };
+    } catch (error) {
+      console.error('Academic cloud sync failed:', error);
+      academicCloudReady = false;
+      render();
+      return { academicCloudReady: false, error };
+    }
+  }
+
+  function openCourseModal() {
+    const form = qs('#addCourseForm');
+    form?.reset();
+    qs('#courseColor').value = '#6d63ed';
+    qs('#courseGrade').value = '0';
+    qs('#courseTarget').value = '0';
+    openModal(qs('#addCourseModal'));
+    setTimeout(()=>qs('#courseCode')?.focus(),60);
+  }
+
+  async function confirmAddCourse(event) {
+    event?.preventDefault();
+    if (!cloudUser || !cloudSemester || !academicCloudReady) {
+      toast('Course cloud sync is not ready. Check the Appwrite courses table.');
+      return;
+    }
+
+    const topics = qs('#courseTopics').value
+      .split(',')
+      .map(value=>value.trim())
+      .filter(Boolean);
+
+    const draft = {
+      id: uid('c'),
+      code: qs('#courseCode').value.trim(),
+      name: qs('#courseName').value.trim(),
+      teacher: qs('#courseTeacher').value.trim(),
+      room: qs('#courseRoom').value.trim(),
+      color: qs('#courseColor').value || '#6d63ed',
+      schedule: qs('#courseSchedule').value.trim(),
+      grade: Number(qs('#courseGrade').value || 0),
+      target: Number(qs('#courseTarget').value || 0),
+      topics
+    };
+
+    if (!draft.code || !draft.name) {
+      toast('Course code and course name are required.');
+      return;
+    }
+
+    const button=qs('#addCourseSubmit');
+    if(button){button.disabled=true;button.textContent='Saving…';}
+
+    try {
+      const row=await window.studentHubCloud.createCourse(cloudUser,cloudSemester,draft,draft.id);
+      state.courses.push(rowToCourse(row));
+      save();
+      closeModals();
+      render();
+      toast(`${draft.name} saved to Appwrite.`);
+    } catch (error) {
+      console.error(error);
+      toast('Could not save the course. Check your Appwrite courses table.');
+    } finally {
+      if(button){button.disabled=false;button.textContent='Add course';}
+    }
+  }
 
   function setUserContext(userId, semesterName='') {
     if (!userId) return;
@@ -360,12 +578,16 @@
 
   function resetUserContext() {
     stopTimer();
+    cloudUser = null;
+    cloudSemester = null;
+    academicCloudReady = false;
     activeStorageKey = BASE_STORAGE_KEY;
     state = loadState(activeStorageKey);
   }
 
   window.studentHubApp = Object.freeze({
     setUserContext,
+    setCloudContext,
     resetUserContext,
     render,
     toast
@@ -378,6 +600,7 @@
   qs('#openSearch').addEventListener('click',openSearch);
   qs('#modalBackdrop').addEventListener('click',closeModals);
   qsa('.close-modal').forEach(b=>b.addEventListener('click',closeModals));
+  qs('#addCourseForm')?.addEventListener('submit',confirmAddCourse);
   qs('#fillExample').addEventListener('click',()=>{qs('#quickAddInput').value='Chem lab report Friday 6pm, probably 2 hours';});
   qs('#parseQuickAdd').addEventListener('click',()=>{const text=qs('#quickAddInput').value.trim();if(!text)return toast('Type something to capture first.');quickParsed=parseNatural(text);showQuickPreview(quickParsed);});
   qs('#confirmQuickAdd').addEventListener('click',confirmQuick);

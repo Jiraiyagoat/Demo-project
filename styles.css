@@ -481,3 +481,25 @@ body.dark .auth-card { box-shadow: 0 30px 100px rgba(0,0,0,.4); }
   .password-checks { grid-template-columns:1fr; }
   .profile-menu { position:fixed; left:12px; right:12px; top:78px; width:auto; }
 }
+
+/* v0.3 — cloud course form */
+.course-form { margin-top: 14px; }
+.course-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.course-form-grid label {
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+.course-form-grid input { width: 100%; }
+.course-form-wide { grid-column: 1 / -1; }
+#courseColor { min-height: 45px; padding: 5px; cursor: pointer; }
+@media (max-width: 680px) {
+  .course-form-grid { grid-template-columns: 1fr; }
+  .course-form-wide { grid-column: auto; }
+}

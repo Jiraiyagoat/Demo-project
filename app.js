@@ -10,8 +10,9 @@
   const isoDate = d => { const x=new Date(d); const y=x.getFullYear(); const m=String(x.getMonth()+1).padStart(2,'0'); const day=String(x.getDate()).padStart(2,'0'); return `${y}-${m}-${day}`; };
   const clamp = (n,min,max)=>Math.max(min,Math.min(max,n));
   const esc = str => String(str ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#039;','"':'&quot;'}[c]));
-  const fmtDate = (d, opts={weekday:'short', month:'short', day:'numeric'}) => new Intl.DateTimeFormat(undefined, opts).format(new Date(d));
-  const fmtTime = d => new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit'}).format(new Date(d));
+  const UI_LOCALE = 'en-GB';
+  const fmtDate = (d, opts={weekday:'short', month:'short', day:'numeric'}) => new Intl.DateTimeFormat(UI_LOCALE, opts).format(new Date(d));
+  const fmtTime = d => new Intl.DateTimeFormat(UI_LOCALE,{hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date(d));
   const dateAt = (date, time='09:00') => new Date(`${isoDate(date)}T${time}:00`);
 
   const colors = { algorithms:'#7e77ef', statistics:'#37a7b7', chemistry:'#d79036', writing:'#c9688a' };
@@ -104,6 +105,7 @@
   let syllabusParsed = [];
   let aiSyllabusResult = null;
   let timerHandle = null;
+  let focusMode = false;
   let cloudUser = null;
   let cloudSemester = null;
   let academicCloudReady = false;
@@ -221,11 +223,13 @@
   }
 
   function setRoute(route){
+    if(route!=='study'&&focusMode){focusMode=false;document.body.classList.remove('focus-mode');if(document.fullscreenElement&&document.exitFullscreen)document.exitFullscreen().catch(()=>{});}
     state.route=route; activeCourseId=null; save(); render();
   }
 
   function render(){
     document.body.classList.toggle('dark', state.theme==='dark');
+    document.body.classList.toggle('focus-mode', focusMode&&state.route==='study');
     qs('#themeToggle').textContent = state.theme==='dark' ? '☀' : '☾';
     qsa('[data-route]').forEach(b=>b.classList.toggle('active', b.dataset.route===state.route));
     qsa('.mobile-nav [data-route]').forEach(b=>b.classList.toggle('active', b.dataset.route===state.route));
@@ -257,7 +261,8 @@
     const actionMeta=actionEvent?(actionIsClass?`${fmtTime(actionEvent.start)}–${fmtTime(actionEvent.end)}${actionEvent.room?` · ${actionEvent.room}`:''}`:`${fmtTime(actionEvent.start)}–${fmtTime(actionEvent.end)} · ${eventMinutes(actionEvent)} min planned`):(actionAssessment?`${formatMinutes(Math.min(preferredSessionMinutes(actionAssessment),Math.max(15,actionAssessment.remaining||45)))} focus · ${humanDue(actionAssessment.due)}`:'');
     const dueSoon=dedupeAssessmentList(state.assessments.filter(a=>a.status!=='done'&&new Date(a.due)>=startOfDay(now))).sort((a,b)=>new Date(a.due)-new Date(b.due)).slice(0,4);
     const needsPlan=planningCandidates({limit:4});
-    const missedBlocks=state.events.filter(e=>e.type==='work'&&e.status!=='done'&&new Date(e.end)<now);
+    const recoveryWindowStart=weekStart(now);
+    const missedBlocks=state.events.filter(e=>e.type==='work'&&e.status!=='done'&&new Date(e.end)<now&&new Date(e.end)>=recoveryWindowStart);
     const required=requiredMinutesThisWeek(), capacity=Math.max(60,Number(state.semester.availableMinutesPerWeek||840));
     const over=Math.max(0,required-capacity);
     const repair=plannerRepairPreview();
@@ -280,7 +285,7 @@
           <div class="today-card-head"><span class="eyebrow">Plan status</span><span class="plan-state-dot">${attention?'!':'✓'}</span></div>
           <h3>${esc(planTitle)}</h3><p>${esc(planCopy)}</p>
           <div class="today-plan-metrics"><span><strong>${formatMinutes(required)}</strong><small>due workload</small></span><span><strong>${formatMinutes(capacity)}</strong><small>weekly capacity</small></span><span><strong>${needsPlan.length}</strong><small>need planning</small></span></div>
-          <div class="button-row">${repair.remove.length?`<button class="btn primary" id="reviewPlanRepair">Repair plan</button>`:`<button class="btn ${attention?'primary':'secondary'}" id="smartPlanToday">${attention?'Preview changes':'Check smart plan'}</button>`}<button class="btn secondary" data-route-jump="planner">Open planner</button></div>
+          <div class="button-row">${missedBlocks.length||repair.remove.length?`<button class="btn primary" id="reviewPlanRepair">${missedBlocks.length?'Review slipped work':'Repair plan'}</button>`:`<button class="btn ${attention?'primary':'secondary'}" id="smartPlanToday">${attention?'Preview changes':'Check smart plan'}</button>`}<button class="btn secondary" data-route-jump="planner">Open planner</button></div>
         </article>
       </section>
 
@@ -482,20 +487,21 @@
   function plannerRepairPreview(){
     const now=new Date();
     const capacity=Math.max(60,Number(state.semester.availableMinutesPerWeek||840));
-    const adaptive=e=>e.type==='work'&&e.status!=='done'&&new Date(e.start)>now&&String(e.sourceType||'').startsWith('adaptive_planner');
+    const adaptive=e=>e.type==='work'&&e.status!=='done'&&String(e.sourceType||'').startsWith('adaptive_planner');
     const removals=new Map();
     const reason=(e,msg)=>{ if(!removals.has(e.id)) removals.set(e.id,{event:e,reason:msg}); };
     const adaptiveBlocks=state.events.filter(adaptive).sort((a,b)=>new Date(a.start)-new Date(b.start));
 
     for(const e of adaptiveBlocks){
       const a=assessment(e.assessmentId);
+      if(new Date(e.end)<now){ reason(e,'Study block slipped into the past'); continue; }
       if(!a){ reason(e,'Orphaned planner block'); continue; }
       if(new Date(e.start)<planningWindowStart(a)) reason(e,'Scheduled before its planning window');
       else if(new Date(e.end)>new Date(a.due)) reason(e,'Scheduled after the deadline');
     }
 
     const byAssessment=new Map();
-    adaptiveBlocks.filter(e=>!removals.has(e.id)).forEach(e=>{
+    adaptiveBlocks.filter(e=>!removals.has(e.id)&&new Date(e.end)>=now).forEach(e=>{
       if(!byAssessment.has(e.assessmentId)) byAssessment.set(e.assessmentId,[]);
       byAssessment.get(e.assessmentId).push(e);
     });
@@ -509,7 +515,7 @@
       }
     }
 
-    const surviving=adaptiveBlocks.filter(e=>!removals.has(e.id));
+    const surviving=adaptiveBlocks.filter(e=>!removals.has(e.id)&&new Date(e.end)>=now);
     const weeks=new Map();
     for(const e of surviving){
       const key=isoDate(weekStart(e.start));
@@ -533,7 +539,10 @@
     const currentStart=weekStart(), currentEnd=addDays(currentStart,7);
     const currentScheduled=scheduledWorkMinutesForWeek(currentStart);
     const currentManual=state.events.filter(e=>e.status!=='done'&&['work','study'].includes(e.type)&&new Date(e.start)>=currentStart&&new Date(e.start)<currentEnd&&!adaptive(e)).sort((a,b)=>new Date(a.start)-new Date(b.start));
-    return {mode:'repair',remove:[...removals.values()],manual:currentManual,capacity,currentScheduled,overBy:Math.max(0,currentScheduled-capacity),generatedAt:new Date().toISOString()};
+    const manualMissed=currentManual.filter(e=>new Date(e.end)<now);
+    const remove=[...removals.values()];
+    const slipped=remove.filter(item=>new Date(item.event.end)<now).length;
+    return {mode:'repair',remove,slipped,manual:currentManual,manualMissed,capacity,currentScheduled,overBy:Math.max(0,currentScheduled-capacity),generatedAt:new Date().toISOString()};
   }
   function planHealth(){
     const repair=plannerRepairPreview();
@@ -723,19 +732,113 @@
     {courseId:'chem',topic:'Equilibrium',q:'What does Le Châtelier’s principle predict when a reactant concentration is increased?',a:'The system shifts in the direction that consumes some of the added reactant, toward products for a simple reactant increase.'},
     {courseId:'alg',topic:'Graphs',q:'When is breadth-first search preferred over depth-first search for an unweighted graph?',a:'When you need shortest path length in number of edges, because BFS explores vertices level by level.'}
   ];
+  function studyTargetOptions(){
+    const openTasks=(state.tasks||[]).filter(t=>t.status!=='done'&&assessment(t.assessmentId)?.status!=='done').sort((a,b)=>new Date(assessment(a.assessmentId)?.due||0)-new Date(assessment(b.assessmentId)?.due||0));
+    const taskAssessmentIds=new Set(openTasks.map(t=>t.assessmentId));
+    const openAssessments=state.assessments.filter(a=>a.status!=='done'&&new Date(a.due)>=startOfDay(new Date())).sort((a,b)=>new Date(a.due)-new Date(b.due));
+    const current=state.timer?.context||{};
+    let selected='free';
+    if(current.taskId&&openTasks.some(t=>t.id===current.taskId)) selected=`task:${current.taskId}`;
+    else if(current.assessmentId&&openAssessments.some(a=>a.id===current.assessmentId)) selected=`assessment:${current.assessmentId}`;
+    const taskOptions=openTasks.map(t=>{const a=assessment(t.assessmentId),c=course(t.courseId);return `<option value="task:${esc(t.id)}" ${selected===`task:${t.id}`?'selected':''}>${esc(c?.code||'Course')} · ${esc(a?.title||'Deadline')} — ${esc(t.title)}</option>`;}).join('');
+    const assessmentOptions=openAssessments.filter(a=>!taskAssessmentIds.has(a.id)).map(a=>{const c=course(a.courseId);return `<option value="assessment:${esc(a.id)}" ${selected===`assessment:${a.id}`?'selected':''}>${esc(c?.code||'Course')} · ${esc(a.title)}</option>`;}).join('');
+    return `<option value="free" ${selected==='free'?'selected':''}>Free focus · timer only</option>${taskOptions?`<optgroup label="Planner tasks">${taskOptions}</optgroup>`:''}${assessmentOptions?`<optgroup label="Deadlines">${assessmentOptions}</optgroup>`:''}`;
+  }
+
+  function studyTargetValue(){
+    const ctx=state.timer?.context||{};
+    if(ctx.taskId&&(state.tasks||[]).some(t=>t.id===ctx.taskId&&t.status!=='done')) return `task:${ctx.taskId}`;
+    if(ctx.assessmentId&&assessment(ctx.assessmentId)?.status!=='done') return `assessment:${ctx.assessmentId}`;
+    return 'free';
+  }
+
+  function setStudyTarget(value){
+    if(state.timer.running)return toast('Pause the timer before switching focus.');
+    const previousCourse=state.timer.context?.courseId||state.courses[0]?.id||'';
+    if(value==='free'){
+      state.timer.context={courseId:previousCourse,assessmentId:'',taskId:'',topic:'Focused study'};
+    }else if(String(value).startsWith('task:')){
+      const task=(state.tasks||[]).find(t=>t.id===String(value).slice(5));
+      const a=task&&assessment(task.assessmentId);
+      if(task&&a)state.timer.context={courseId:task.courseId||a.courseId,assessmentId:a.id,taskId:task.id,topic:a.topics?.[0]||task.title};
+    }else if(String(value).startsWith('assessment:')){
+      const a=assessment(String(value).slice(11));
+      if(a)state.timer.context={courseId:a.courseId,assessmentId:a.id,taskId:'',topic:a.topics?.[0]||a.title};
+    }
+    save(); render();
+  }
+
+  function setStudyCourse(courseId){
+    if(state.timer.running)return toast('Pause the timer before changing course context.');
+    if(!course(courseId))return;
+    state.timer.context={...(state.timer.context||{}),courseId,assessmentId:'',taskId:'',topic:'Focused study'};
+    save(); render();
+  }
+
+  function setTimerDurationMinutes(minutes){
+    if(state.timer.running)return toast('Pause the timer before changing its length.');
+    const mins=clamp(Math.round(Number(minutes)||25),5,180);
+    state.timer.seconds=mins*60;
+    state.timer.initialSeconds=mins*60;
+    save(); render();
+  }
+
+  function adjustTimerMinutes(delta){
+    const current=Math.max(5,Math.round((state.timer.initialSeconds||state.timer.seconds||1500)/60));
+    setTimerDurationMinutes(current+Number(delta||0));
+  }
+
+  async function setFocusMode(on){
+    focusMode=!!on;
+    document.body.classList.toggle('focus-mode',focusMode);
+    if(focusMode && !document.fullscreenElement && document.documentElement.requestFullscreen){
+      try{await document.documentElement.requestFullscreen();}catch(error){console.info('Browser fullscreen unavailable; using distraction-free app mode.',error);}
+    }else if(!focusMode && document.fullscreenElement && document.exitFullscreen){
+      try{await document.exitFullscreen();}catch(error){console.info('Could not exit browser fullscreen.',error);}
+    }
+    render();
+  }
+
   function renderStudy(){
     const t=state.timer;
     if(!state.courses.length){
       return `<article class="card empty-state study-empty"><div class="empty-icon">◎</div><h2>Study starts with academic context.</h2><p>Add a course and deadline first. Student Hub will use them to start focused sessions with the right materials attached.</p><div class="button-row"><button class="btn primary" id="startOnboarding">Set up semester</button><button class="btn secondary" data-route-jump="courses">Go to courses</button></div></article>`;
     }
+    const targetValue=studyTargetValue();
     const contextCourse=course(t.context.courseId)||state.courses[0];
     const contextAssessment=assessment(t.context.assessmentId);
+    const contextTask=(state.tasks||[]).find(task=>task.id===t.context.taskId);
     if(!t.context.courseId&&contextCourse) t.context.courseId=contextCourse.id;
     const contextTopic=t.context.topic||contextAssessment?.topics?.[0]||'Focused study';
+    const displayTitle=contextTask?`${contextAssessment?.title||'Task'} · ${contextTask.title}`:(contextAssessment?.title||contextTopic);
     const matchingResources=state.resources.filter(r=>r.courseId===contextCourse?.id && (!contextTopic||contextTopic==='Focused study'||topicKey(r.topic)===topicKey(contextTopic))).slice(0,5);
     const recent=[...(state.studySessions||[])].sort((a,b)=>new Date(b.completedAt)-new Date(a.completedAt)).slice(0,6);
     const totalMinutes=(state.studySessions||[]).reduce((sum,x)=>sum+Number(x.minutes||0),0);
-    return `<div class="study-execution-grid"><article class="card focus-card execution-focus"><div class="today-card-head"><span class="eyebrow">Focus now</span>${contextAssessment?`<span class="pill">${esc(contextAssessment.type)}</span>`:''}</div><h2>${esc(contextAssessment?.title||contextTopic)}</h2><p class="focus-context-line"><span class="course-dot" style="--course-color:${contextCourse?.color||'var(--accent)'}"></span>${esc(contextCourse?.name||'Study')} · ${esc(contextTopic)}</p><div class="timer" id="timerDisplay">${formatTimer(t.seconds)}</div><div class="button-row focus-actions"><button class="btn primary" id="timerToggle">${t.running?'Pause':'Start'}</button><button class="btn secondary" id="timerReset">Reset</button><button class="btn secondary" id="finishSession">Finish & save</button></div><p class="quiet-note">When you finish, the actual study time is recorded and can improve future session sizing.</p></article><article class="card session-materials"><div class="section-head compact"><div><span class="eyebrow">For this session</span><h2>Materials</h2></div><button class="btn ghost compact-btn" data-open-library-course="${contextCourse?.id||''}">Open Library</button></div>${matchingResources.length?`<div class="session-material-list">${matchingResources.map(r=>`<button class="session-material" data-open-library-resource="${r.id}"><span>${r.type==='PDF'?'▤':r.type==='Link'?'↗':'✎'}</span><div><strong>${esc(r.title)}</strong><small>${esc(r.topic||'General')} · ${esc(r.type)}</small></div></button>`).join('')}</div>`:`<div class="empty-state compact"><p>No material is linked to this topic yet.</p><button class="btn secondary compact-btn" data-add-resource-course="${contextCourse?.id||''}">+ Add material</button></div>`}</article></div><div class="section-head"><div><h2>Due for review</h2><p>Review prompts stay secondary to the session you chose to do now.</p></div></div><div class="review-queue">${state.review.length?state.review.map(reviewRow).join(''):`<div class="card empty-state compact"><p>No review items are due.</p></div>`}</div><div class="section-head"><div><h2>Study history</h2><p>${formatMinutes(totalMinutes)} recorded across ${(state.studySessions||[]).length} session${(state.studySessions||[]).length===1?'':'s'}.</p></div><span class="pill ${knowledgeCloudReady?'success':''}">${knowledgeCloudReady?'Synced':'Local'}</span></div><article class="card session-history">${recent.length?recent.map(studySessionRow).join(''):`<div class="empty-state"><div class="empty-icon">◎</div><h3>No completed focus sessions yet</h3><p>Finish a timer and the session will appear here.</p></div>`}</article>`;
+    const duration=Math.max(5,Math.round((t.initialSeconds||t.seconds||25*60)/60));
+    const durationPresets=[15,25,45,60];
+    const courseOptions=state.courses.map(c=>`<option value="${esc(c.id)}" ${c.id===contextCourse?.id?'selected':''}>${esc(c.code)} · ${esc(c.name)}</option>`).join('');
+    return `<div class="study-control-bar card">
+      <div class="study-control-main">
+        <label class="study-field"><span>Focus target</span><select id="studyTargetSelect" ${t.running?'disabled':''}>${studyTargetOptions()}</select></label>
+        ${targetValue==='free'?`<label class="study-field compact-field"><span>Course context</span><select id="studyCourseSelect" ${t.running?'disabled':''}>${courseOptions}</select></label>`:''}
+      </div>
+      <div class="study-duration-wrap">
+        <span class="study-field-label">Session length</span>
+        <div class="duration-stepper"><button class="duration-adjust" id="timerMinus" ${t.running?'disabled':''} aria-label="Reduce focus time by 5 minutes">−5</button>${durationPresets.map(m=>`<button class="duration-preset ${duration===m?'active':''}" data-duration-minutes="${m}" ${t.running?'disabled':''}>${m}m</button>`).join('')}<button class="duration-adjust" id="timerPlus" ${t.running?'disabled':''} aria-label="Increase focus time by 5 minutes">+5</button></div>
+      </div>
+      <button class="btn secondary focus-mode-button" id="focusModeToggle">${focusMode?'Exit full screen':'Full screen focus'}</button>
+    </div>
+    <div class="study-execution-grid"><article class="card focus-card execution-focus">
+      <div class="today-card-head"><span class="eyebrow">${contextTask?'Planner task':contextAssessment?'Deadline focus':'Free focus'}</span><div class="focus-head-actions">${contextAssessment?`<span class="pill">${esc(contextAssessment.type)}</span>`:''}<button class="btn ghost compact-btn focus-exit-inline" id="focusModeExit">Exit full screen</button></div></div>
+      <h2>${esc(displayTitle)}</h2>
+      <p class="focus-context-line"><span class="course-dot" style="--course-color:${contextCourse?.color||'var(--accent)'}"></span>${esc(contextCourse?.name||'Study')}${contextTask?` · ${esc(contextTask.title)}`:` · ${esc(contextTopic)}`}</p>
+      <div class="timer" id="timerDisplay">${formatTimer(t.seconds)}</div>
+      <div class="focus-session-meta"><span>${duration} min target</span>${contextAssessment?`<span>${formatMinutes(contextAssessment.remaining)} deadline work left</span>`:'<span>No task tracking attached</span>'}</div>
+      <div class="button-row focus-actions"><button class="btn primary" id="timerToggle">${t.running?'Pause':'Start'}</button><button class="btn secondary" id="timerReset">Reset</button><button class="btn secondary" id="finishSession">Finish & save</button></div>
+      <p class="quiet-note">${focusMode?'Distraction-free mode is active. Press Esc or use Exit full screen when you are done.':'Actual study time is recorded when you finish and can improve future session sizing.'}</p>
+    </article>
+    <article class="card session-materials"><div class="section-head compact"><div><span class="eyebrow">For this session</span><h2>Materials</h2></div><button class="btn ghost compact-btn" data-open-library-course="${contextCourse?.id||''}">Open Library</button></div>${matchingResources.length?`<div class="session-material-list">${matchingResources.map(r=>`<button class="session-material" data-open-library-resource="${r.id}"><span>${r.type==='PDF'?'▤':r.type==='Link'?'↗':'✎'}</span><div><strong>${esc(r.title)}</strong><small>${esc(r.topic||'General')} · ${esc(r.type)}</small></div></button>`).join('')}</div>`:`<div class="empty-state compact"><p>${targetValue==='free'?'Choose a course context or keep the session timer-only.':'No material is linked to this topic yet.'}</p><button class="btn secondary compact-btn" data-add-resource-course="${contextCourse?.id||''}">+ Add material</button></div>`}</article></div>
+    <div class="section-head"><div><h2>Due for review</h2><p>Review prompts stay secondary to the session you chose to do now.</p></div></div><div class="review-queue">${state.review.length?state.review.map(reviewRow).join(''):`<div class="card empty-state compact"><p>No review items are due.</p></div>`}</div><div class="section-head"><div><h2>Study history</h2><p>${formatMinutes(totalMinutes)} recorded across ${(state.studySessions||[]).length} session${(state.studySessions||[]).length===1?'':'s'}.</p></div><span class="pill ${knowledgeCloudReady?'success':''}">${knowledgeCloudReady?'Synced':'Local'}</span></div><article class="card session-history">${recent.length?recent.map(studySessionRow).join(''):`<div class="empty-state"><div class="empty-icon">◎</div><h3>No completed focus sessions yet</h3><p>Finish a timer and the session will appear here.</p></div>`}</article>`;
   }
   function studySessionRow(session){ const c=course(session.courseId); return `<div class="session-row"><div><strong><span class="course-dot" style="--course-color:${c?.color||'var(--accent)'}"></span> ${esc(session.topic||'Study')}</strong><small>${esc(c?.name||'Course')} · ${fmtDate(session.completedAt,{month:'short',day:'numeric'})} ${fmtTime(session.completedAt)}</small></div><span class="pill">${formatMinutes(session.minutes)}</span></div>`; }
 
@@ -802,8 +905,15 @@
     qsa('[data-jump-day]').forEach(b=>b.onclick=()=>{const target=new Date(`${b.dataset.jumpDay}T12:00:00`); const diff=Math.round((weekStart(target)-weekStart())/(7*DAY)); plannerWeekOffset=diff; ensurePlannerPrefs().view='week'; save();render();});
     qsa('[data-task-done]').forEach(b=>b.onclick=()=>markTaskDone(b.dataset.taskDone));
     bindDragDrop();
+    qs('#studyTargetSelect')?.addEventListener('change',e=>setStudyTarget(e.target.value));
+    qs('#studyCourseSelect')?.addEventListener('change',e=>setStudyCourse(e.target.value));
+    qsa('[data-duration-minutes]').forEach(b=>b.onclick=()=>setTimerDurationMinutes(Number(b.dataset.durationMinutes)));
+    qs('#timerMinus')?.addEventListener('click',()=>adjustTimerMinutes(-5));
+    qs('#timerPlus')?.addEventListener('click',()=>adjustTimerMinutes(5));
+    qs('#focusModeToggle')?.addEventListener('click',()=>setFocusMode(!focusMode));
+    qs('#focusModeExit')?.addEventListener('click',()=>setFocusMode(false));
     qs('#timerToggle')?.addEventListener('click',toggleTimer);
-    qs('#timerReset')?.addEventListener('click',()=>{stopTimer();state.timer.seconds=25*60;state.timer.initialSeconds=25*60;state.timer.running=false;save();render();});
+    qs('#timerReset')?.addEventListener('click',()=>{stopTimer();state.timer.seconds=state.timer.initialSeconds||25*60;state.timer.running=false;save();render();});
     qs('#finishSession')?.addEventListener('click',finishStudySession);
     qs('#showAnswer')?.addEventListener('click',()=>qs('#practiceAnswer')?.classList.toggle('hidden'));
     qs('#nextQuestion')?.addEventListener('click',()=>{state.practiceIndex=(state.practiceIndex+1)%practiceBank.length;save();render();});
@@ -905,10 +1015,11 @@
     const host=qs('#plannerPreviewContent'), title=qs('#plannerPreviewTitle'), eyebrow=qs('#plannerPreviewEyebrow'), apply=qs('#applyPlannerPreview');
     if(!host||!plannerPreview)return;
     if(plannerPreview.mode==='repair'){
-      eyebrow.textContent='Plan repair preview'; title.textContent='Clean up the overloaded plan'; apply.textContent='Apply repair';
+      eyebrow.textContent='Plan recovery preview'; title.textContent='Review what needs to be rebuilt';
       const items=plannerPreview.remove||[];
-      const manual=plannerPreview.manual||[], overBy=Number(plannerPreview.overBy||0);
-      host.innerHTML=`<div class="preview-summary-grid"><div><span>Auto-repairable</span><strong>${items.length}</strong></div><div><span>Manual / legacy blocks</span><strong>${manual.length}</strong></div><div><span>Over capacity</span><strong>${formatMinutes(overBy)}</strong></div></div><div class="preview-explainer"><strong>${items.length?'Safe repair':'Why Student Hub did not auto-repair this'}</strong><p>${items.length?`Only future blocks created by Student Hub's adaptive planner are eligible. Fixed classes, manual blocks, completed sessions, and deadlines remain untouched.`:`The overload is coming from manual or legacy work blocks, not future Smart Plan blocks. Student Hub will show them here, but it will not silently delete work you placed yourself. Drag, delete, or reschedule those blocks manually, or increase weekly capacity.`}</p></div><div class="preview-list">${items.length?items.map(item=>{const e=item.event,c=course(e.courseId);return `<div class="preview-row" style="--row-color:${c?.color||'var(--accent)'}"><span>${fmtDate(e.start,{weekday:'short',month:'short',day:'numeric'})}<small>${fmtTime(e.start)}–${fmtTime(e.end)}</small></span><div><strong>${esc(e.title)}</strong><small>${esc(item.reason)}</small></div><span class="preview-remove">Remove</span></div>`;}).join(''):manual.length?manual.map(e=>{const c=course(e.courseId);return `<div class="preview-row manual-only" style="--row-color:${c?.color||'var(--accent)'}"><span>${fmtDate(e.start,{weekday:'short',month:'short',day:'numeric'})}<small>${fmtTime(e.start)}–${fmtTime(e.end)}</small></span><div><strong>${esc(e.title)}</strong><small>Manual / legacy block · ${eventMinutes(e)}m</small></div><span class="preview-keep">Keep</span></div>`;}).join(''):`<div class="empty-state compact"><div class="empty-icon">✓</div><h3>No repair needed</h3><p>The adaptive blocks already fit their planning windows and capacity.</p></div>`}</div>`;
+      const manual=plannerPreview.manual||[], manualMissed=plannerPreview.manualMissed||[], overBy=Number(plannerPreview.overBy||0), slipped=Number(plannerPreview.slipped||0);
+      apply.textContent=slipped?'Clean up & replan':'Apply repair';
+      host.innerHTML=`<div class="preview-summary-grid"><div><span>Safe to clean</span><strong>${items.length}</strong></div><div><span>Slipped sessions</span><strong>${slipped}</strong></div><div><span>Manual / legacy blocks</span><strong>${manual.length}</strong></div><div><span>Over capacity</span><strong>${formatMinutes(overBy)}</strong></div></div><div class="preview-explainer"><strong>${items.length?'Recovery is previewed before anything changes':'Why Student Hub did not auto-repair this'}</strong><p>${items.length?`Only Student Hub-generated planner blocks that are missed or no longer valid are eligible. Fixed classes, manual blocks, completed sessions, and deadlines remain untouched. After cleanup, Student Hub will immediately show replacement sessions for review.`:`The overload is coming from manual or legacy work blocks, so Student Hub will not silently remove them. Review those blocks in Planner, or change your weekly capacity.`}</p></div><div class="preview-list">${items.length?items.map(item=>{const e=item.event,c=course(e.courseId);return `<div class="preview-row" style="--row-color:${c?.color||'var(--accent)'}"><span>${fmtDate(e.start,{weekday:'short',month:'short',day:'numeric'})}<small>${fmtTime(e.start)}–${fmtTime(e.end)}</small></span><div><strong>${esc(e.title)}</strong><small>${esc(item.reason)}</small></div><span class="preview-remove">Remove</span></div>`;}).join(''):(manualMissed.length?manualMissed:manual).length?(manualMissed.length?manualMissed:manual).map(e=>{const c=course(e.courseId);return `<div class="preview-row manual-only" style="--row-color:${c?.color||'var(--accent)'}"><span>${fmtDate(e.start,{weekday:'short',month:'short',day:'numeric'})}<small>${fmtTime(e.start)}–${fmtTime(e.end)}</small></span><div><strong>${esc(e.title)}</strong><small>Manual / legacy block · ${eventMinutes(e)}m</small></div><span class="preview-keep">Keep</span></div>`;}).join(''):`<div class="empty-state compact"><div class="empty-icon">✓</div><h3>No repair needed</h3><p>The adaptive blocks already fit their planning windows and capacity.</p></div>`}</div>`;
       apply.disabled=!items.length;
     }else{
       eyebrow.textContent='Smart Plan Preview'; title.textContent='Review the proposed study plan'; apply.textContent='Apply plan';
@@ -929,8 +1040,17 @@
           if(e.cloudId&&window.studentHubCloud.deleteWorkBlock) await window.studentHubCloud.deleteWorkBlock(e.cloudId);
           state.events=state.events.filter(x=>x.id!==e.id); removed++;
         }
-        save(); closeModals(); render(); updateCloudStatusCard(); toast(`Plan repaired: ${removed} future adaptive block${removed===1?'':'s'} removed. Preview Smart Plan to rebuild them safely.`);
-        plannerPreview=null; return;
+        save(); render(); updateCloudStatusCard();
+        const replacement=buildPlannerPreview({});
+        plannerPreview=replacement;
+        if((replacement.blocks||[]).length || (replacement.warnings||[]).length){
+          renderPlannerPreviewModal();
+          toast(`Cleaned ${removed} outdated planner block${removed===1?'':'s'}. Review the replacement sessions before saving.`);
+        }else{
+          closeModals(); plannerPreview=null;
+          toast(`Plan recovered: ${removed} outdated planner block${removed===1?'':'s'} removed. No replacement sessions are needed.`);
+        }
+        return;
       }
       const blocks=plannerPreview.blocks||[];
       const taskCache=new Map(); let made=0;
@@ -1137,7 +1257,7 @@
     try{
       if(knowledgeCloudReady&&cloudUser&&cloudSemester){ const row=await window.studentHubCloud.createStudySession(cloudUser,cloudSemester,draft,draft.id); state.studySessions.unshift(rowToStudySession(row)); }
       else state.studySessions.unshift(draft);
-      state.timer.seconds=25*60; state.timer.initialSeconds=25*60; save(); render(); updateCloudStatusCard(); toast(knowledgeCloudReady?'Focus session saved.':'Focus session complete.');
+      const preferred=Math.max(5*60,state.timer.initialSeconds||25*60); state.timer.seconds=preferred; state.timer.initialSeconds=preferred; state.timer.running=false; save(); render(); updateCloudStatusCard(); toast(knowledgeCloudReady?'Focus session saved.':'Focus session complete.');
     }catch(error){ console.error('Study session sync failed:',error); state.studySessions.unshift(draft); save(); render(); toast('Session saved locally; cloud study sync failed.'); }
   }
 
@@ -1938,7 +2058,8 @@
   qs('#parseSyllabus').addEventListener('click',()=>{syllabusParsed=parseSyllabusText(qs('#syllabusInput').value);showSyllabusPreview(syllabusParsed);if(!syllabusParsed.length)toast('No dated assessment lines detected.');});
   qs('#confirmSyllabus').addEventListener('click',confirmSyllabus);
   qs('#searchInput').addEventListener('input',e=>renderSearch(e.target.value));
-  document.addEventListener('keydown',e=>{ if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();openSearch();} else if(e.key==='Escape')closeModals(); else if(e.key.toLowerCase()==='q'&&!['INPUT','TEXTAREA'].includes(document.activeElement.tagName)){e.preventDefault();openQuickAdd();} });
+  document.addEventListener('keydown',e=>{ if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();openSearch();} else if(e.key==='Escape'&&focusMode){focusMode=false;document.body.classList.remove('focus-mode');if(document.fullscreenElement&&document.exitFullscreen)document.exitFullscreen().catch(()=>{});render();} else if(e.key==='Escape')closeModals(); else if(e.key.toLowerCase()==='q'&&!['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName)&&!focusMode){e.preventDefault();openQuickAdd();} });
+  document.addEventListener('fullscreenchange',()=>{if(focusMode&&!document.fullscreenElement){focusMode=false;document.body.classList.remove('focus-mode');render();}});
 
   window.addEventListener('beforeunload',save);
   if('serviceWorker' in navigator){ window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{})); }

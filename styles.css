@@ -725,3 +725,98 @@ body.dark .auth-card { box-shadow: 0 30px 100px rgba(0,0,0,.4); }
 
 @media(max-width:980px){.today-command-grid,.today-two-column,.study-execution-grid{grid-template-columns:1fr}.planner-control-cluster{align-items:flex-start;flex-direction:column}.technical-grid{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:680px){.today-empty-start{padding:24px}.today-empty-start h2{font-size:26px}.today-plan-metrics,.settings-metrics,.onboarding-summary{grid-template-columns:1fr}.setting-field-grid{grid-template-columns:1fr}.context-toolbar{align-items:flex-start;flex-direction:column}.library-search-wrap{min-width:100%;width:100%}.onboarding-actions{flex-wrap:wrap}.onboarding-actions .btn{flex:1}.technical-grid{grid-template-columns:1fr}.planner-control-cluster{width:100%}.planner-control-cluster .planner-segments{width:100%}}
+
+
+/* v1.0.1 — Study focus, recovery, locale and Inbox refinements */
+.study-control-bar{
+  display:flex;
+  align-items:flex-end;
+  justify-content:space-between;
+  gap:14px;
+  padding:14px 16px;
+  margin-bottom:14px;
+}
+.study-control-main{display:flex;gap:10px;align-items:flex-end;min-width:0;flex:1}
+.study-field{display:grid;gap:6px;min-width:min(430px,48vw)}
+.study-field.compact-field{min-width:min(250px,28vw)}
+.study-field>span,.study-field-label{font-size:8px;color:var(--muted);font-weight:800;text-transform:uppercase;letter-spacing:.08em}
+.study-field select{
+  width:100%;
+  border:1px solid var(--line);
+  background:var(--panel-soft);
+  color:var(--text);
+  border-radius:11px;
+  padding:9px 11px;
+  font:inherit;
+  font-size:9px;
+}
+.study-duration-wrap{display:grid;gap:6px;flex:0 0 auto}
+.duration-stepper{display:flex;gap:5px;align-items:center;flex-wrap:wrap}
+.duration-stepper button{
+  min-width:42px;height:35px;border-radius:10px;border:1px solid var(--line);
+  background:var(--panel-soft);color:var(--muted);cursor:pointer;font-size:9px;font-weight:750
+}
+.duration-stepper button:hover:not(:disabled){border-color:var(--line-strong);color:var(--text);background:var(--panel)}
+.duration-stepper button.active{background:color-mix(in srgb,var(--accent) 10%,var(--panel));border-color:color-mix(in srgb,var(--accent) 36%,var(--line));color:var(--accent)}
+.duration-stepper button:disabled{opacity:.45;cursor:not-allowed}
+.focus-mode-button{white-space:nowrap}
+.focus-session-meta{display:flex;gap:7px;justify-content:center;flex-wrap:wrap;margin:-7px 0 18px}
+.focus-session-meta span{border:1px solid var(--line);background:var(--panel-soft);border-radius:999px;padding:5px 8px;color:var(--muted);font-size:8px}
+
+body.focus-mode{overflow:hidden}
+body.focus-mode .sidebar,
+body.focus-mode .topbar,
+body.focus-mode .mobile-nav{display:none!important}
+body.focus-mode .main-area{margin-left:0;min-height:100vh}
+body.focus-mode .page{
+  max-width:none;
+  margin:0;
+  padding:0;
+  min-height:100vh;
+  display:grid;
+  place-items:center;
+}
+body.focus-mode .study-control-bar,
+body.focus-mode .session-materials,
+body.focus-mode .review-queue,
+body.focus-mode .session-history,
+body.focus-mode .page>.section-head{display:none!important}
+body.focus-mode .study-execution-grid{
+  display:block;
+  width:min(980px,calc(100vw - 32px));
+  margin:0 auto;
+}
+body.focus-mode .execution-focus{
+  min-height:min(760px,calc(100vh - 32px));
+  width:100%;
+  border-radius:28px;
+  padding:clamp(28px,6vh,72px);
+  box-shadow:0 28px 90px rgba(10,16,30,.18);
+}
+body.focus-mode .execution-focus .timer{font-size:clamp(96px,15vw,190px);margin:clamp(30px,7vh,70px) 0 30px}
+body.focus-mode .execution-focus h2{font-size:clamp(28px,4vw,48px)}
+body.focus-mode .focus-actions .btn{min-width:118px;padding:13px 18px;font-size:11px}
+body.focus-mode .focus-mode-button{display:inline-flex!important}
+
+.inbox-compose{
+  grid-template-columns:minmax(0,1fr) auto;
+  align-items:start;
+}
+.inbox-compose textarea{min-height:72px}
+.inbox-compose #captureInbox{
+  align-self:start;
+  min-width:96px;
+  height:40px;
+  padding:0 16px;
+  margin-top:0;
+}
+
+@media(max-width:900px){
+  .study-control-bar{align-items:stretch;flex-direction:column}
+  .study-control-main{flex-direction:column;align-items:stretch}
+  .study-field,.study-field.compact-field{min-width:0;width:100%}
+  .study-duration-wrap{width:100%}
+  .focus-mode-button{align-self:flex-start}
+}
+
+.focus-head-actions{display:flex;align-items:center;gap:8px}.focus-exit-inline{display:none}body.focus-mode .focus-exit-inline{display:inline-flex!important}

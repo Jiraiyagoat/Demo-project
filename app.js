@@ -94,6 +94,7 @@
   let academicCloudReady = false;
   let plannerCloudReady = false;
   let knowledgeCloudReady = false;
+  let plannerWeekOffset = 0;
 
   function save(){ localStorage.setItem(activeStorageKey, JSON.stringify(state)); updateBadges(); }
   function course(id){ return state.courses.find(c=>c.id===id); }
@@ -104,15 +105,69 @@
   function isToday(date){ return isoDate(date)===isoDate(new Date()); }
   function weekStart(date=new Date()) { const d=startOfDay(date); const day=(d.getDay()+6)%7; return addDays(d,-day); }
 
-  function requiredMinutesThisWeek(){
-    const end=addDays(weekStart(),7);
-    return state.assessments.filter(a=>new Date(a.due)<end && new Date(a.due)>=weekStart() && a.status!=='done').reduce((s,a)=>s+(a.remaining ?? a.effort ?? 0),0);
+  function requiredMinutesForWeek(start=weekStart()){
+    const end=addDays(start,7);
+    return state.assessments
+      .filter(a=>a.status!=='done'&&new Date(a.due)<end&&new Date(a.due)>=start)
+      .reduce((s,a)=>s+(a.remaining ?? a.effort ?? 0),0);
   }
-  function scheduledWorkMinutesThisWeek(){
-    const start=weekStart(), end=addDays(start,7);
-    return state.events.filter(e=>['work','study'].includes(e.type)&&new Date(e.start)>=start&&new Date(e.start)<end)
+  function requiredMinutesThisWeek(){ return requiredMinutesForWeek(weekStart()); }
+
+  function scheduledWorkMinutesForWeek(start=weekStart()){
+    const end=addDays(start,7);
+    return state.events.filter(e=>e.status!=='done'&&['work','study'].includes(e.type)&&new Date(e.start)>=start&&new Date(e.start)<end)
       .reduce((s,e)=>s+Math.round((new Date(e.end)-new Date(e.start))/60000),0);
   }
+  function scheduledWorkMinutesThisWeek(){ return scheduledWorkMinutesForWeek(weekStart()); }
+
+  function eventMinutes(e){ return Math.max(0,Math.round((new Date(e.end)-new Date(e.start))/60000)); }
+  function plannedMinutesForAssessment(assessmentId){
+    return state.events.filter(e=>e.type==='work'&&e.status!=='done'&&e.assessmentId===assessmentId).reduce((sum,e)=>sum+eventMinutes(e),0);
+  }
+  function plannedMinutesForTask(taskId){
+    return state.events.filter(e=>e.type==='work'&&e.status!=='done'&&e.taskId===taskId).reduce((sum,e)=>sum+eventMinutes(e),0);
+  }
+  function unscheduledMinutesForAssessment(a){
+    return Math.max(0,Math.round((a?.remaining ?? a?.effort ?? 0)-plannedMinutesForAssessment(a?.id)));
+  }
+  function planningLeadDays(a){
+    const type=String(a?.type||'').toLowerCase();
+    if(/project/.test(type)) return 21;
+    if(/final|midterm|exam/.test(type)) return 14;
+    if(/quiz/.test(type)) return 7;
+    return 7;
+  }
+  function planningWindowStart(a){
+    const due=startOfDay(new Date(a.due));
+    const lead=addDays(due,-planningLeadDays(a));
+    const now=startOfDay(new Date());
+    return lead>now?lead:now;
+  }
+  function planningPriority(a){
+    const due=new Date(a.due);
+    const days=Math.max(.15,(due-new Date())/DAY);
+    const unscheduled=unscheduledMinutesForAssessment(a);
+    return (unscheduled/Math.max(.5,days))+(Number(a.weight||0)*4)+(days<3?120:days<7?45:0);
+  }
+  function planningState(a){
+    const due=new Date(a.due), now=new Date();
+    const remaining=Math.max(0,Number(a.remaining ?? a.effort ?? 0));
+    const planned=plannedMinutesForAssessment(a);
+    const unscheduled=Math.max(0,remaining-planned);
+    const days=(due-now)/DAY;
+    if(due<=now) return {key:'overdue',label:'Overdue',tone:'danger',remaining,planned,unscheduled,days};
+    if(unscheduled<=5) return {key:'planned',label:'Planned',tone:'success',remaining,planned,unscheduled:0,days};
+    if(days<=2) return {key:'risk',label:'At risk',tone:'danger',remaining,planned,unscheduled,days};
+    if(days<=7) return {key:'needs',label:'Needs plan',tone:'warning',remaining,planned,unscheduled,days};
+    return {key:'later',label:'Unscheduled',tone:'neutral',remaining,planned,unscheduled,days};
+  }
+  function planningCandidates({courseId='',limit=50}={}){
+    return state.assessments
+      .filter(a=>a.status!=='done'&&(!courseId||a.courseId===courseId)&&new Date(a.due)>new Date()&&unscheduledMinutesForAssessment(a)>5)
+      .sort((a,b)=>planningPriority(b)-planningPriority(a))
+      .slice(0,limit);
+  }
+  function plannerWeekStart(){ return addDays(weekStart(),plannerWeekOffset*7); }
   function nextAssessment(){
     const now=new Date();
     const list=state.assessments.filter(a=>a.status!=='done'&&new Date(a.due)>now);
@@ -153,8 +208,11 @@
     const best=nextAssessment(); const c=best?course(best.courseId):null; const next=nextEvent();
     const required=requiredMinutesThisWeek(), capacity=state.semester.availableMinutesPerWeek;
     const pct=clamp(Math.round(required/capacity*100),0,125);
-    const todaysEvents=state.events.filter(e=>isToday(e.start)).sort((a,b)=>new Date(a.start)-new Date(b.start));
+    const todaysEvents=state.events.filter(e=>isToday(e.start)&&e.status!=='done').sort((a,b)=>new Date(a.start)-new Date(b.start));
     const dueSoon=state.assessments.filter(a=>a.status!=='done').sort((a,b)=>new Date(a.due)-new Date(b.due)).slice(0,4);
+    const needsPlan=planningCandidates({limit:4});
+    const urgentPlan=needsPlan.filter(a=>planningState(a).days<=7);
+    const totalUnscheduled=needsPlan.reduce((sum,a)=>sum+unscheduledMinutesForAssessment(a),0);
     return `
       <div class="hero-grid">
         <article class="card hero-card">
@@ -171,13 +229,29 @@
         </article>
       </div>
 
+      ${needsPlan.length?`
+      <article class="card planning-pulse">
+        <div class="planning-pulse-copy">
+          <span class="eyebrow">Planning pulse</span>
+          <h3>${urgentPlan.length?`${urgentPlan.length} near-term deadline${urgentPlan.length===1?'':'s'} need a plan`:`${needsPlan.length} upcoming deadline${needsPlan.length===1?'':'s'} still need scheduling`}</h3>
+          <p>${formatMinutes(totalUnscheduled)} of the highest-priority work is not yet placed on your calendar. Smart planning respects deadlines, existing blocks, and your weekly capacity.</p>
+        </div>
+        <div class="planning-pulse-items">
+          ${needsPlan.slice(0,3).map(a=>{
+            const ps=planningState(a), cc=course(a.courseId);
+            return `<div class="planning-mini"><span class="course-dot" style="--course-color:${cc?.color||'var(--accent)'}"></span><div><strong>${esc(a.title)}</strong><small>${esc(cc?.name||'Course')} · ${humanDue(a.due)} · ${formatMinutes(ps.unscheduled)} unscheduled</small></div><span class="plan-status ${ps.tone}">${ps.label}</span></div>`;
+          }).join('')}
+        </div>
+        <div class="planning-pulse-actions"><button class="btn secondary" data-route-jump="planner">Review planner</button><button class="btn primary" id="smartPlanToday">Build study plan</button></div>
+      </article>`:''}
+
       <div class="section-head"><div><h2>Today’s timeline</h2><p>Fixed commitments and scheduled work are intentionally separate.</p></div><button class="btn secondary" data-route-jump="planner">Open planner</button></div>
       <div class="section-grid">
         <article class="card timeline">
           ${todaysEvents.length?todaysEvents.map(e=>timelineRow(e)).join(''):`<div class="empty-state"><div class="empty-icon">○</div><h3>Open day</h3><p>No fixed or planned events today.</p></div>`}
         </article>
         <article class="card list-card">
-          ${dueSoon.map(a=>{const c=course(a.courseId);return `<div class="list-row"><div><strong><span class="course-dot" style="--course-color:${c.color}"></span> ${esc(a.title)}</strong><small>${esc(c.name)} · ${formatMinutes(a.remaining)} left · ${a.type}</small></div><span class="date-chip">${humanDue(a.due)}</span></div>`}).join('')}
+          ${dueSoon.map(a=>{const c=course(a.courseId);return `<div class="list-row"><div><strong><span class="course-dot" style="--course-color:${c?.color||'var(--accent)'}"></span> ${esc(a.title)}</strong><small>${esc(c?.name||'Course')} · ${formatMinutes(a.remaining)} left · ${a.type}</small></div><span class="date-chip">${humanDue(a.due)}</span></div>`}).join('')}
         </article>
       </div>
 
@@ -190,9 +264,11 @@
   function reviewRow(r){ const c=course(r.courseId); return `<div class="review-item"><div><strong><span class="course-dot" style="--course-color:${c.color}"></span> ${esc(r.topic)}</strong><small>${esc(c.name)} · ${r.due===isoDate(new Date())?'Due today':'Due '+fmtDate(r.due,{month:'short',day:'numeric'})}</small></div><div class="mastery">${r.mastery}%</div></div>`; }
 
   function renderPlanner(){
-    const start=weekStart(); const days=[0,1,2,3,4,5,6].map(n=>addDays(start,n));
-    const req=requiredMinutesThisWeek(), sched=scheduledWorkMinutesThisWeek();
+    const start=plannerWeekStart(); const days=[0,1,2,3,4,5,6].map(n=>addDays(start,n));
+    const req=requiredMinutesForWeek(start), sched=scheduledWorkMinutesForWeek(start);
     const openTasks=(state.tasks||[]).filter(t=>t.status!=='done').sort((a,b)=>a.position-b.position).slice(0,8);
+    const needsPlan=planningCandidates({limit:6});
+    const atRisk=state.assessments.filter(a=>a.status!=='done'&&['overdue','risk'].includes(planningState(a).key)).sort((a,b)=>new Date(a.due)-new Date(b.due));
     return `
       <div class="stat-strip">
         <div class="stat"><span>Required this week</span><strong>${formatMinutes(req)}</strong></div>
@@ -200,7 +276,34 @@
         <div class="stat"><span>Unscheduled work</span><strong>${formatMinutes(Math.max(0,req-sched))}</strong></div>
         <div class="stat"><span>Capacity</span><strong>${formatMinutes(state.semester.availableMinutesPerWeek)}</strong></div>
       </div>
-      <div class="week-toolbar"><div><span class="eyebrow">Week of ${fmtDate(start,{month:'short',day:'numeric'})}</span><h2 style="margin:4px 0 0;font-size:18px">Cloud planner · drag work blocks between days</h2></div><div class="button-row"><button class="btn secondary" id="autoPlan">Auto-plan remaining</button></div></div>
+
+      ${(needsPlan.length||atRisk.length)?`
+      <article class="card planner-intelligence">
+        <div class="planner-intelligence-head">
+          <div><span class="eyebrow">Adaptive planner</span><h2>${atRisk.length?`${atRisk.length} deadline${atRisk.length===1?'':'s'} need attention`:`${needsPlan.length} assessment${needsPlan.length===1?'':'s'} can be scheduled`}</h2><p>Student Hub converts remaining effort into realistic work blocks before each deadline instead of simply storing due dates.</p></div>
+          <button class="btn primary" id="smartPlanAll">Smart-plan unscheduled</button>
+        </div>
+        <div class="plan-recommendations">
+          ${(atRisk.length?atRisk:needsPlan).slice(0,4).map(a=>{
+            const ps=planningState(a), cc=course(a.courseId);
+            const coverage=ps.remaining?Math.min(100,Math.round(ps.planned/ps.remaining*100)):100;
+            return `<div class="plan-recommendation">
+              <div class="plan-recommendation-main"><span class="course-dot" style="--course-color:${cc?.color||'var(--accent)'}"></span><div><strong>${esc(a.title)}</strong><small>${esc(cc?.name||'Course')} · ${humanDue(a.due)}</small></div></div>
+              <div class="plan-recommendation-progress"><span style="--plan-progress:${coverage}%"></span></div>
+              <div class="plan-recommendation-meta"><span>${formatMinutes(ps.planned)} placed</span><span>${formatMinutes(ps.unscheduled)} to schedule</span><span class="plan-status ${ps.tone}">${ps.label}</span></div>
+              ${ps.key!=='overdue'&&ps.unscheduled>5?`<button class="btn ghost compact-btn" data-plan="${a.id}">Plan this</button>`:''}
+            </div>`;
+          }).join('')}
+        </div>
+      </article>`:''}
+
+      <div class="week-toolbar">
+        <div><span class="eyebrow">Week of ${fmtDate(start,{month:'short',day:'numeric'})}</span><h2 style="margin:4px 0 0;font-size:18px">Cloud planner · drag work blocks between days</h2></div>
+        <div class="planner-week-actions">
+          <div class="week-nav"><button class="btn ghost compact-btn" id="plannerPrevWeek" aria-label="Previous week">←</button><button class="btn secondary compact-btn" id="plannerThisWeek">This week</button><button class="btn ghost compact-btn" id="plannerNextWeek" aria-label="Next week">→</button></div>
+          <button class="btn secondary" id="autoPlan">Smart-plan remaining</button>
+        </div>
+      </div>
       <div class="week-grid">
         ${days.map(day=>{
           const events=state.events.filter(e=>e.status!=='done'&&isoDate(e.start)===isoDate(day)).sort((a,b)=>new Date(a.start)-new Date(b.start));
@@ -208,11 +311,12 @@
           return `<div class="day-column" data-day="${isoDate(day)}"><div class="day-head ${isToday(day)?'today':''}"><strong>${fmtDate(day,{weekday:'short'})}</strong><span>${fmtDate(day,{month:'short',day:'numeric'})}</span></div>${events.map(eventCard).join('')}${deadlines.map(deadlineCard).join('')}</div>`
         }).join('')}
       </div>
-      <p style="color:var(--muted);font-size:10px;margin-top:10px">Deadlines are constraints. Work blocks are stored in Appwrite and keep their time when you sign in elsewhere.</p>
+      <p style="color:var(--muted);font-size:10px;margin-top:10px">Deadlines are constraints. Adaptive work blocks respect your configured weekly capacity and avoid overlapping existing events.</p>
       <div class="section-head"><div><h2>Work queue</h2><p>Planning an assessment creates actionable tasks before placing time blocks.</p></div><span class="pill ${plannerCloudReady?'success':''}">${plannerCloudReady?'Cloud tasks synced':'Planner cloud unavailable'}</span></div>
-      <article class="card task-queue">${openTasks.length?openTasks.map(taskRow).join(''):`<div class="empty-state"><div class="empty-icon">✓</div><h3>No open planner tasks</h3><p>Use Plan work on an assessment to create a task breakdown.</p></div>`}</article>
+      <article class="card task-queue">${openTasks.length?openTasks.map(taskRow).join(''):`<div class="empty-state"><div class="empty-icon">✓</div><h3>No open planner tasks</h3><p>Import a syllabus or use Plan work on an assessment to create a task breakdown.</p></div>`}</article>
     `;
   }
+
   function eventCard(e){ const c=course(e.courseId); const draggable=['work','study'].includes(e.type); return `<div class="event-card" ${draggable?'draggable="true"':''} data-event-id="${e.id}" style="--event-color:${c?.color||'var(--accent)'}"><div class="event-type">${e.type}${e.cloudId?' · cloud':''}</div><small>${fmtTime(e.start)}–${fmtTime(e.end)}</small><strong>${esc(e.title)}</strong></div>`; }
   function taskRow(t){ const c=course(t.courseId); const a=assessment(t.assessmentId); return `<div class="task-row"><div class="task-row-copy"><strong><span class="course-dot" style="--course-color:${c?.color||'var(--accent)'}"></span> ${esc(t.title)}</strong><small>${esc(c?.name||'Course')} · ${esc(a?.title||'Assessment')} · ${formatMinutes(t.remaining)} remaining</small></div><div class="button-row"><span class="pill">${esc(t.status.replace('_',' '))}</span><button class="btn secondary" data-task-done="${t.id}">Mark done</button></div></div>`; }
   function deadlineCard(a){ const c=course(a.courseId); return `<div class="event-card" style="--event-color:${c?.color||'var(--danger)'}"><div class="event-type">deadline · ${fmtTime(a.due)}</div><strong>${esc(a.title)}</strong><small>${formatMinutes(a.remaining)} remaining</small></div>`; }
@@ -286,7 +390,12 @@
     qsa('[data-course-tab]').forEach(b=>b.onclick=()=>{activeCourseTab=b.dataset.courseTab;render();});
     qs('#openImport')?.addEventListener('click',openImport);
     qs('#openAddCourse')?.addEventListener('click',openCourseModal);
-    qs('#autoPlan')?.addEventListener('click',autoPlan);
+    qs('#autoPlan')?.addEventListener('click',()=>autoPlan());
+    qs('#smartPlanAll')?.addEventListener('click',()=>autoPlan());
+    qs('#smartPlanToday')?.addEventListener('click',async()=>{await autoPlan(); if(state.route!=='planner')setRoute('planner');});
+    qs('#plannerPrevWeek')?.addEventListener('click',()=>{plannerWeekOffset--;render();});
+    qs('#plannerNextWeek')?.addEventListener('click',()=>{plannerWeekOffset++;render();});
+    qs('#plannerThisWeek')?.addEventListener('click',()=>{plannerWeekOffset=0;render();});
     qsa('[data-task-done]').forEach(b=>b.onclick=()=>markTaskDone(b.dataset.taskDone));
     bindDragDrop();
     qs('#timerToggle')?.addEventListener('click',toggleTimer);
@@ -336,39 +445,138 @@
     return created;
   }
 
+  function overlapsExisting(start,end,extraEvents=[]){
+    const pad=10*60000;
+    const all=[...state.events.filter(e=>e.status!=='done'),...extraEvents];
+    return all.some(e=>{
+      const es=new Date(e.start).getTime(), ee=new Date(e.end).getTime();
+      return start.getTime()<ee+pad&&end.getTime()>es-pad;
+    });
+  }
+
+  function scheduledMinutesOnDay(day,extraEvents=[]){
+    const key=isoDate(day);
+    return [...state.events.filter(e=>e.status!=='done'),...extraEvents]
+      .filter(e=>['work','study'].includes(e.type)&&isoDate(e.start)===key)
+      .reduce((sum,e)=>sum+eventMinutes(e),0);
+  }
+
+  function scheduledMinutesInWeekContaining(day,extraEvents=[]){
+    const start=weekStart(day), end=addDays(start,7);
+    return [...state.events.filter(e=>e.status!=='done'),...extraEvents]
+      .filter(e=>['work','study'].includes(e.type)&&new Date(e.start)>=start&&new Date(e.start)<end)
+      .reduce((sum,e)=>sum+eventMinutes(e),0);
+  }
+
+  function dailyPlanningLimit(){
+    return Math.max(90,Math.min(240,Math.round((state.semester.availableMinutesPerWeek||840)/5)));
+  }
+
+  function candidateWindowsForDay(day,flexible=false){
+    const dow=new Date(day).getDay();
+    if(flexible) return dow===0||dow===6 ? [['09:00','20:30']] : [['08:00','21:30']];
+    return dow===0||dow===6 ? [['10:00','18:00']] : [['15:30','21:00']];
+  }
+
+  function findPlanningSlot(a,requestedMinutes,extraEvents=[]){
+    const due=new Date(a.due);
+    const now=new Date();
+    const windowStart=planningWindowStart(a);
+    const firstDay=startOfDay(windowStart);
+    const lastDay=startOfDay(due);
+    const dayLimit=dailyPlanningLimit();
+    const capacity=Math.max(60,Number(state.semester.availableMinutesPerWeek||840));
+    const durations=[requestedMinutes,Math.min(60,requestedMinutes),Math.min(45,requestedMinutes),Math.min(30,requestedMinutes)]
+      .map(x=>Math.max(10,Math.round(x))).filter((x,i,arr)=>arr.indexOf(x)===i);
+
+    for(const flexible of [false,true]){
+      for(let day=firstDay; day<=lastDay; day=addDays(day,1)){
+        const currentDayMinutes=scheduledMinutesOnDay(day,extraEvents);
+        const allowedDaily=flexible?Math.max(dayLimit,300):dayLimit;
+        for(const [from,to] of candidateWindowsForDay(day,flexible)){
+          let cursor=dateAt(day,from);
+          const windowEnd=dateAt(day,to);
+          if(isToday(day)&&cursor<now){
+            const rounded=new Date(Math.ceil(now.getTime()/(15*60000))*(15*60000));
+            cursor=rounded>cursor?rounded:cursor;
+          }
+          if(cursor<windowStart) cursor=new Date(windowStart);
+          for(;cursor<windowEnd;cursor=new Date(cursor.getTime()+30*60000)){
+            for(const duration of durations){
+              if(currentDayMinutes+duration>allowedDaily) continue;
+              const end=new Date(cursor.getTime()+duration*60000);
+              if(end>windowEnd||end>due||cursor<now) continue;
+              const weekUsed=scheduledMinutesInWeekContaining(cursor,extraEvents);
+              if(weekUsed+duration>capacity) continue;
+              if(overlapsExisting(cursor,end,extraEvents)) continue;
+              return {start:new Date(cursor),end,duration};
+            }
+          }
+        }
+      }
+    }
+    return null;
+  }
+
   async function planAssessment(id, options={}){
     const a=assessment(id); if(!a)return 0;
     if(!plannerCloudReady || !cloudUser || !cloudSemester){ if(!options.silent)toast('Planner cloud is not ready. Check tasks and work_blocks in Appwrite.'); return 0; }
-    const existing=state.events.filter(e=>e.assessmentId===id&&e.type==='work'&&e.status!=='done');
-    if(existing.length){ if(!options.silent)toast('Work for this assessment is already scheduled.'); return 0; }
+    if(new Date(a.due)<=new Date()){if(!options.silent)toast('This deadline is already overdue, so new work blocks were not created.');return 0;}
     try{
       const tasks=await ensureTasksForAssessment(a);
-      const now=startOfDay(new Date()); const due=startOfDay(new Date(a.due)); const days=Math.max(1,Math.ceil((due-now)/DAY));
-      let blockIndex=0, made=0;
+      let made=0, unscheduled=0;
+
       for(const task of tasks){
-        let left=Math.max(0,task.remaining||task.estimate||0);
-        while(left>0){
-          const minutes=Math.min(60,left); const d=addDays(now,blockIndex%days); const h=16+(blockIndex%4);
-          const start=dateAt(d,`${String(h).padStart(2,'0')}:00`); const end=new Date(start.getTime()+minutes*60000);
-          const draft={id:uid('wb'),courseId:a.courseId,assessmentId:a.id,taskId:task.id,title:`${a.title} · ${task.title}`,type:'work',start:start.toISOString(),end:end.toISOString(),status:'planned',sourceType:'planner'};
+        let left=Math.max(0,(task.remaining||task.estimate||0)-plannedMinutesForTask(task.id));
+        while(left>5){
+          const requested=Math.min(60,left);
+          const slot=findPlanningSlot(a,requested);
+          if(!slot){unscheduled+=left;break;}
+          const draft={
+            id:uid('wb'),
+            courseId:a.courseId,
+            assessmentId:a.id,
+            taskId:task.id,
+            title:`${a.title} · ${task.title}`,
+            type:'work',
+            start:slot.start.toISOString(),
+            end:slot.end.toISOString(),
+            status:'planned',
+            sourceType:'adaptive_planner'
+          };
           const row=await window.studentHubCloud.createWorkBlock(cloudUser,cloudSemester,draft,draft.id);
-          state.events.push(rowToWorkBlock(row)); made++; blockIndex++; left-=minutes;
+          const mapped=rowToWorkBlock(row);
+          state.events.push(mapped); made++; left-=slot.duration;
         }
       }
+
       save(); render(); updateCloudStatusCard();
-      if(!options.silent)toast(`Created ${tasks.length} tasks and ${made} cloud work block${made!==1?'s':''}.`);
+      if(!options.silent){
+        if(made&&unscheduled>5) toast(`Placed ${made} work block${made!==1?'s':''}; ${formatMinutes(unscheduled)} could not fit before the deadline/capacity limit.`);
+        else if(made) toast(`Smart plan created ${made} cloud work block${made!==1?'s':''}.`);
+        else toast(unscheduled>5?'No safe slot fits before this deadline within your capacity.':'This assessment is already fully planned.');
+      }
       return made;
-    }catch(error){ console.error('Cloud planning failed:',error); if(!options.silent)toast('Could not create cloud planner data. Check the tasks/work_blocks table setup.'); return 0; }
+    }catch(error){
+      console.error('Adaptive cloud planning failed:',error);
+      if(!options.silent)toast('Could not create the adaptive plan. Check the tasks/work_blocks table setup.');
+      return 0;
+    }
   }
 
-  async function autoPlan(){
-    if(!plannerCloudReady){toast('Planner cloud is not ready.');return;}
-    const button=qs('#autoPlan'); if(button){button.disabled=true;button.textContent='Planning…';}
+  async function autoPlan(options={}){
+    if(!plannerCloudReady){toast('Planner cloud is not ready.');return 0;}
+    const buttons=[qs('#autoPlan'),qs('#smartPlanAll'),qs('#smartPlanToday')].filter(Boolean);
+    buttons.forEach(button=>{button.disabled=true;button.dataset.oldText=button.textContent;button.textContent='Planning…';});
+
+    const courseId=options?.courseId||'';
+    const candidates=planningCandidates({courseId,limit:50});
     let made=0;
-    for(const a of state.assessments.filter(a=>a.status!=='done')){
-      if(!state.events.some(e=>e.assessmentId===a.id&&e.type==='work'&&e.status!=='done')) made+=await planAssessment(a.id,{silent:true});
-    }
-    render(); toast(made?`Created ${made} cloud work blocks.`:'Everything already has planned work.');
+    for(const a of candidates) made+=await planAssessment(a.id,{silent:true});
+
+    render();
+    toast(made?`Adaptive planner created ${made} work block${made!==1?'s':''}.`:(candidates.length?'No additional work blocks fit within current deadlines and capacity.':'Everything upcoming is already planned.'));
+    return made;
   }
 
   async function markTaskDone(id){
@@ -766,10 +974,16 @@
       const addedTopics=Math.max(0,mergedTopics.length-originalTopics.length);
       const review=qs('#aiSyllabusReview');
       if(review){
-        review.innerHTML=`<div class="ai-import-success"><div class="ai-success-icon">✓</div><span class="eyebrow">Import complete</span><h3>${esc(target.name)} is updated</h3><p>${imported} assessment${imported===1?'':'s'} added${skipped?` · ${skipped} duplicate or invalid item${skipped===1?'':'s'} skipped`:''}${addedTopics?` · ${addedTopics} new topic${addedTopics===1?'':'s'} merged`:''}.</p><button class="btn primary" id="viewImportedCourse" type="button">View course</button></div>`;
+        const plannableForCourse=planningCandidates({courseId:target.id,limit:50}).length;
+        review.innerHTML=`<div class="ai-import-success"><div class="ai-success-icon">✓</div><span class="eyebrow">Import complete</span><h3>${esc(target.name)} is updated</h3><p>${imported} assessment${imported===1?'':'s'} added${skipped?` · ${skipped} duplicate or invalid item${skipped===1?'':'s'} skipped`:''}${addedTopics?` · ${addedTopics} new topic${addedTopics===1?'':'s'} merged`:''}${plannableForCourse?` · ${plannableForCourse} deadline${plannableForCourse===1?' is':'s are'} ready for planning`:''}.</p><div class="button-row ai-success-actions">${plannableForCourse?`<button class="btn secondary" id="planImportedCourse" type="button">Build study plan</button>`:''}<button class="btn primary" id="viewImportedCourse" type="button">View course</button></div></div>`;
         review.classList.remove('hidden');
       }
       qs('#importAiSyllabus')?.classList.add('hidden');
+      qs('#planImportedCourse')?.addEventListener('click',async()=>{
+        const planButton=qs('#planImportedCourse'); if(planButton){planButton.disabled=true;planButton.textContent='Planning…';}
+        await autoPlan({courseId:target.id});
+        closeModals(); plannerWeekOffset=0; state.route='planner'; save(); render();
+      });
       qs('#viewImportedCourse')?.addEventListener('click',()=>{activeCourseId=target.id;activeCourseTab='overview';closeModals();state.route='courses';save();render();});
       toast(`AI import complete: ${imported} added${skipped?`, ${skipped} skipped`:''}.`);
     }catch(error){console.error(error);toast(error?.message||'Could not import the reviewed syllabus.');}

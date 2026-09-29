@@ -530,3 +530,24 @@ body.dark .auth-card { box-shadow: 0 30px 100px rgba(0,0,0,.4); }
   .library-toolbar .button-row { justify-content:space-between; }
   .session-row { grid-template-columns:1fr; }
 }
+
+/* v0.6 — private Appwrite Storage uploads */
+.btn:disabled { opacity:.52; cursor:not-allowed; transform:none !important; box-shadow:none; }
+.file-picker small { color:var(--muted); font-size:9px; font-weight:600; }
+.file-picker input[type="file"] { padding:10px; background:var(--panel-soft); border:1px dashed var(--line-strong); border-radius:12px; }
+.upload-status { margin-top:12px; padding:11px 12px; border:1px solid var(--line); border-radius:12px; background:var(--panel-soft); color:var(--muted); font-size:10px; line-height:1.45; }
+.upload-status.active { position:relative; overflow:hidden; color:var(--text); }
+.upload-status.active::after { content:""; position:absolute; left:0; bottom:0; height:2px; width:38%; background:var(--accent); animation:uploadSweep 1.1s ease-in-out infinite alternate; }
+.upload-status.success { border-color:color-mix(in srgb, var(--success) 30%, var(--line)); background:color-mix(in srgb, var(--success) 8%, var(--panel-soft)); color:var(--success); }
+.upload-status.error { border-color:color-mix(in srgb, var(--danger) 30%, var(--line)); background:color-mix(in srgb, var(--danger) 8%, var(--panel-soft)); color:var(--danger); }
+@keyframes uploadSweep { from { transform:translateX(-35%); } to { transform:translateX(200%); } }
+.file-meta { margin-top:8px; color:var(--muted); font-size:9px; }
+.resource-actions { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:10px; }
+.resource-action { border:0; background:transparent; padding:0; cursor:pointer; font-family:inherit; }
+.resource-delete { border:0; background:transparent; color:var(--danger); cursor:pointer; padding:0; font-size:9px; font-weight:800; }
+.resource-delete:hover { text-decoration:underline; }
+.syllabus-upload-panel { margin-top:14px; padding:14px; border:1px solid var(--line); border-radius:16px; background:var(--panel-soft); }
+.syllabus-upload-actions { margin-top:12px; justify-content:flex-end; }
+.modal-divider { display:flex; align-items:center; gap:10px; margin:16px 0; color:var(--muted); font-size:9px; font-weight:800; text-transform:uppercase; letter-spacing:.08em; }
+.modal-divider::before,.modal-divider::after { content:""; height:1px; background:var(--line); flex:1; }
+@media (max-width:680px) { .syllabus-upload-actions { justify-content:stretch; } .syllabus-upload-actions .btn { flex:1; } }

@@ -253,7 +253,16 @@
   function renderLibrary(){
     return `<div class="library-toolbar"><input class="search-input" id="librarySearch" placeholder="Search notes, files, links and topics..."/><div class="button-row"><span class="pill ${knowledgeCloudReady?'success':''}">${knowledgeCloudReady?'Cloud library synced':'Library cloud unavailable'}</span><button class="btn primary" id="openAddResource">+ Add resource</button></div></div><div class="resource-grid" id="resourceGrid">${state.resources.map(resourceCard).join('')}</div>`;
   }
-  function resourceCard(r){ const c=course(r.courseId); const icon={PDF:'▤',Note:'✎',Link:'↗'}[r.type]||'•'; const open=r.url?`<a class="resource-open" href="${esc(r.url)}" target="_blank" rel="noopener">Open ↗</a>`:''; return `<article class="card resource-card" data-resource-text="${esc((r.title+' '+r.topic+' '+courseName(r.courseId)+' '+r.description).toLowerCase())}"><div><div class="resource-icon">${icon}</div><h3>${esc(r.title)}</h3><p>${esc(r.description)}</p>${open}</div><footer><span><span class="course-dot" style="--course-color:${c?.color||'var(--accent)'}"></span> ${esc(c?.name||'Unassigned')} · ${esc(r.topic||'General')}</span><span>${esc(r.updated||'Cloud')}</span></footer></article>`; }
+  function resourceCard(r){
+    const c=course(r.courseId);
+    const icon={PDF:'▤',Note:'✎',Link:'↗'}[r.type]||'•';
+    const action=r.storageFileId
+      ? `<button class="resource-open resource-action" data-open-file="${esc(r.storageFileId)}">Open PDF ↗</button>`
+      : r.url ? `<a class="resource-open" href="${esc(r.url)}" target="_blank" rel="noopener">Open ↗</a>` : '';
+    const fileMeta=r.storageFileId ? `<div class="file-meta">${esc(r.fileName||'Stored PDF')} · ${formatBytes(r.fileSize||0)}</div>` : '';
+    const remove=r.storageFileId ? `<button class="resource-delete" data-delete-resource="${esc(r.id)}">Delete</button>` : '';
+    return `<article class="card resource-card" data-resource-text="${esc((r.title+' '+r.topic+' '+courseName(r.courseId)+' '+r.description+' '+(r.fileName||'')).toLowerCase())}"><div><div class="resource-icon">${icon}</div><h3>${esc(r.title)}</h3><p>${esc(r.description)}</p>${fileMeta}<div class="resource-actions">${action}${remove}</div></div><footer><span><span class="course-dot" style="--course-color:${c?.color||'var(--accent)'}"></span> ${esc(c?.name||'Unassigned')} · ${esc(r.topic||'General')}</span><span>${esc(r.updated||'Cloud')}</span></footer></article>`;
+  }
 
   function renderInbox(){
     const items=state.inbox.filter(i=>!i.processed).sort((a,b)=>new Date(b.created)-new Date(a.created));
@@ -264,7 +273,7 @@
     const academicLabel = academicCloudReady ? 'Courses + assessments cloud' : 'Academic cloud unavailable';
     const plannerLabel = plannerCloudReady ? 'Tasks + work blocks cloud' : 'Planner cloud unavailable';
     const knowledgeLabel = knowledgeCloudReady ? 'Library + Inbox + study cloud' : 'Knowledge cloud unavailable';
-    return `<div class="settings-grid"><article class="card setting-card"><h3>Weekly study capacity</h3><p>The workload engine compares estimated required work with the time you realistically have.</p><label class="eyebrow" for="capacityInput">Hours / week</label><input id="capacityInput" type="number" min="1" max="80" step=".5" value="${state.semester.availableMinutesPerWeek/60}" style="width:100%;margin-top:7px"/></article><article class="card setting-card"><h3>Cloud academic data</h3><p>Semester, courses, assessments, planner tasks, work blocks, resources, Inbox, and study sessions use Appwrite.</p><span class="pill ${academicCloudReady?'success':''}">${academicLabel}</span> <span class="pill ${plannerCloudReady?'success':''}">${plannerLabel}</span> <span class="pill ${knowledgeCloudReady?'success':''}">${knowledgeLabel}</span></article><article class="card setting-card"><h3>One source of truth</h3><p>Academic objects and completed focus sessions now follow the same signed-in student across devices.</p><button class="btn secondary" data-route-jump="study">Open study history</button></article><article class="card setting-card"><h3>Next backend step</h3><p>Add Appwrite Storage for real PDF uploads, then send those documents through a server-side Gemini workflow.</p><span class="pill">Storage + Gemini next</span></article></div>`;
+    return `<div class="settings-grid"><article class="card setting-card"><h3>Weekly study capacity</h3><p>The workload engine compares estimated required work with the time you realistically have.</p><label class="eyebrow" for="capacityInput">Hours / week</label><input id="capacityInput" type="number" min="1" max="80" step=".5" value="${state.semester.availableMinutesPerWeek/60}" style="width:100%;margin-top:7px"/></article><article class="card setting-card"><h3>Cloud academic data</h3><p>Semester, courses, assessments, planner tasks, work blocks, resources, Inbox, and study sessions use Appwrite.</p><span class="pill ${academicCloudReady?'success':''}">${academicLabel}</span> <span class="pill ${plannerCloudReady?'success':''}">${plannerLabel}</span> <span class="pill ${knowledgeCloudReady?'success':''}">${knowledgeLabel}</span></article><article class="card setting-card"><h3>Private academic files</h3><p>PDFs can now be stored in the private <strong>academic_files</strong> Appwrite Storage bucket and linked to Library resources.</p><span class="pill ${window.studentHubCloud?.storage?'success':''}">${window.studentHubCloud?.storage?'Storage client ready':'Storage unavailable'}</span></article><article class="card setting-card"><h3>Next backend step</h3><p>Syllabus PDFs now have a secure upload path. The next milestone connects an Appwrite Function to Gemini for structured extraction and review.</p><span class="pill">Gemini function next</span></article></div>`;
   }
 
   function bindPageEvents(){
@@ -286,6 +295,8 @@
     qs('#nextQuestion')?.addEventListener('click',()=>{state.practiceIndex=(state.practiceIndex+1)%practiceBank.length;save();render();});
     qs('#librarySearch')?.addEventListener('input',e=>{const q=e.target.value.toLowerCase();qsa('[data-resource-text]').forEach(card=>card.style.display=card.dataset.resourceText.includes(q)?'':'none');});
     qs('#openAddResource')?.addEventListener('click',openResourceModal);
+    qsa('[data-open-file]').forEach(b=>b.onclick=()=>openStoredFile(b.dataset.openFile));
+    qsa('[data-delete-resource]').forEach(b=>b.onclick=()=>deleteStoredResource(b.dataset.deleteResource));
     qs('#captureInbox')?.addEventListener('click',captureInboxItem);
     qsa('[data-organize]').forEach(b=>b.onclick=()=>{const i=state.inbox.find(x=>x.id===b.dataset.organize); if(!i)return; openQuickAdd(i.text, i.id);});
     qsa('[data-archive]').forEach(b=>b.onclick=()=>archiveInboxItem(b.dataset.archive));
@@ -426,18 +437,67 @@
     const form=qs('#addResourceForm'); form?.reset();
     const select=qs('#resourceCourse'); if(select)select.innerHTML=state.courses.map(c=>`<option value="${c.id}">${esc(c.code)} · ${esc(c.name)}</option>`).join('');
     qs('#resourceType').value='Note'; qs('#resourceTopic').value=state.courses[0]?.topics?.[0]||'General';
+    setResourceTypeFields(); setUploadStatus('');
     openModal(qs('#addResourceModal')); setTimeout(()=>qs('#resourceTitle')?.focus(),60);
+  }
+
+  function setResourceTypeFields(){
+    const type=qs('#resourceType')?.value||'Note';
+    qs('#resourceFileWrap')?.classList.toggle('hidden',type!=='PDF');
+    qs('#resourceUrlWrap')?.classList.toggle('hidden',type!=='Link');
+    if(type!=='PDF'&&qs('#resourceFile'))qs('#resourceFile').value='';
+  }
+
+  function setUploadStatus(message, stateName=''){
+    const box=qs('#resourceUploadStatus'); if(!box)return;
+    box.textContent=message; box.className=`upload-status${stateName?` ${stateName}`:''}${message?'':' hidden'}`;
   }
 
   async function confirmAddResource(event){
     event?.preventDefault();
     if(!cloudUser||!cloudSemester||!knowledgeCloudReady)return toast('Library cloud sync is not ready.');
-    const draft={id:uid('r'),courseId:qs('#resourceCourse').value,topic:qs('#resourceTopic').value.trim()||'General',type:qs('#resourceType').value,title:qs('#resourceTitle').value.trim(),description:qs('#resourceDescription').value.trim(),url:qs('#resourceUrl').value.trim(),sourceType:'manual'};
+    const type=qs('#resourceType').value;
+    const file=qs('#resourceFile')?.files?.[0]||null;
+    const draft={id:uid('r'),courseId:qs('#resourceCourse').value,topic:qs('#resourceTopic').value.trim()||'General',type,title:qs('#resourceTitle').value.trim(),description:qs('#resourceDescription').value.trim(),url:type==='Link'?qs('#resourceUrl').value.trim():'',sourceType:type==='PDF'?'upload':'manual'};
     if(!draft.title)return toast('Resource title is required.');
-    const button=qs('#addResourceSubmit'); if(button){button.disabled=true;button.textContent='Saving…';}
-    try{ const row=await window.studentHubCloud.createResource(cloudUser,cloudSemester,draft,draft.id); state.resources.unshift(rowToResource(row)); save(); closeModals(); render(); updateCloudStatusCard(); toast('Resource saved to Appwrite.'); }
-    catch(error){console.error(error);toast('Could not save resource. Check the resources table.');}
+    if(type==='PDF'&&!file)return toast('Choose a PDF file to upload.');
+    const button=qs('#addResourceSubmit'); if(button){button.disabled=true;button.textContent=type==='PDF'?'Uploading…':'Saving…';}
+    let uploaded=null;
+    try{
+      if(type==='PDF'){
+        setUploadStatus(`Uploading ${file.name} (${formatBytes(file.size)})…`,'active');
+        uploaded=await window.studentHubCloud.uploadAcademicFile(cloudUser,cloudSemester,file,'resources');
+        draft.storageFileId=uploaded.$id; draft.fileName=uploaded.name||file.name; draft.mimeType=uploaded.mimeType||file.type||'application/pdf'; draft.fileSize=uploaded.sizeOriginal??file.size;
+        setUploadStatus('Upload complete. Saving Library metadata…','success');
+      }
+      const row=await window.studentHubCloud.createResource(cloudUser,cloudSemester,draft,draft.id);
+      state.resources.unshift(rowToResource(row)); save(); closeModals(); render(); updateCloudStatusCard(); toast(type==='PDF'?'PDF uploaded privately to Appwrite Storage.':'Resource saved to Appwrite.');
+    }
+    catch(error){
+      console.error(error);
+      if(uploaded?.$id){ try{await window.studentHubCloud.deleteAcademicFile(uploaded.$id);}catch(cleanupError){console.warn('Upload rollback failed:',cleanupError);} }
+      setUploadStatus(error?.message||'Upload failed.','error'); toast(type==='PDF'?'Could not upload PDF. Check the Storage bucket and resource columns.':'Could not save resource. Check the resources table.');
+    }
     finally{if(button){button.disabled=false;button.textContent='Add resource';}}
+  }
+
+  function openStoredFile(fileId){
+    try{
+      const view=window.studentHubCloud?.getAcademicFileView?.(fileId);
+      const url=view?.href||view?.toString?.()||String(view||'');
+      if(!url)return toast('Could not build the private file view URL.');
+      window.open(url,'_blank','noopener,noreferrer');
+    }catch(error){console.error(error);toast('Could not open this PDF. Check file permissions.');}
+  }
+
+  async function deleteStoredResource(resourceId){
+    const item=state.resources.find(r=>r.id===resourceId); if(!item||!item.storageFileId)return;
+    if(!confirm(`Delete “${item.title}” and its stored PDF?`))return;
+    try{
+      try{await window.studentHubCloud.deleteAcademicFile(item.storageFileId);}catch(error){if(error?.code!==404)throw error;}
+      if(item.cloudId)await window.studentHubCloud.deleteResource(item.cloudId);
+      state.resources=state.resources.filter(r=>r.id!==resourceId); save(); render(); updateCloudStatusCard(); toast('PDF and Library record deleted.');
+    }catch(error){console.error(error);toast('Could not delete this stored resource.');}
   }
 
   async function captureInboxItem(){
@@ -500,7 +560,41 @@
   function openImport(){
     const tomorrow=addDays(new Date(),1), d5=addDays(new Date(),5), d12=addDays(new Date(),12);
     qs('#syllabusInput').value=`STAT210 Statistics\nProfessor: Dr. Park\nProblem Set 3 due ${isoDate(tomorrow)} 23:59 | estimated 2h\nQuiz: Probability & Distributions due ${isoDate(d5)} 14:00 | estimated 1h\nMidterm Exam due ${isoDate(d12)} 10:00 | estimated 5h`;
+    const courseSelect=qs('#syllabusCourse'); if(courseSelect)courseSelect.innerHTML=state.courses.map(c=>`<option value="${c.id}">${esc(c.code)} · ${esc(c.name)}</option>`).join('');
+    if(qs('#syllabusFile'))qs('#syllabusFile').value='';
+    qs('#syllabusFileStatus').className='upload-status hidden'; qs('#syllabusFileStatus').textContent='';
+    qs('#analyzeSyllabusFile').disabled=true; qs('#analyzeSyllabusFile').dataset.resourceId='';
     qs('#syllabusPreview').classList.add('hidden');qs('#confirmSyllabus').classList.add('hidden');syllabusParsed=[];openModal(qs('#importModal'));
+  }
+
+  async function uploadSyllabusPdf(){
+    if(!cloudUser||!cloudSemester||!knowledgeCloudReady)return toast('Cloud Library must be ready before uploading a syllabus.');
+    const file=qs('#syllabusFile')?.files?.[0]; if(!file)return toast('Choose a syllabus PDF first.');
+    const courseId=qs('#syllabusCourse')?.value||state.courses[0]?.id; if(!courseId)return toast('Create or select a course first.');
+    const button=qs('#uploadSyllabusFile'); const status=qs('#syllabusFileStatus');
+    if(button){button.disabled=true;button.textContent='Uploading…';}
+    if(status){status.textContent=`Uploading ${file.name} (${formatBytes(file.size)})…`;status.className='upload-status active';}
+    let uploaded=null;
+    try{
+      uploaded=await window.studentHubCloud.uploadAcademicFile(cloudUser,cloudSemester,file,'syllabi');
+      const c=course(courseId);
+      const draft={id:uid('r'),courseId,topic:'Syllabus',type:'PDF',title:`${c?.code||'Course'} syllabus`,description:`Original syllabus PDF · ${file.name}`,url:'',sourceType:'syllabus_upload',storageFileId:uploaded.$id,fileName:uploaded.name||file.name,mimeType:uploaded.mimeType||file.type||'application/pdf',fileSize:uploaded.sizeOriginal??file.size};
+      const row=await window.studentHubCloud.createResource(cloudUser,cloudSemester,draft,draft.id);
+      const resource=rowToResource(row); state.resources.unshift(resource); save(); render(); updateCloudStatusCard();
+      if(status){status.textContent=`Stored privately: ${resource.fileName} · ${formatBytes(resource.fileSize)}`;status.className='upload-status success';}
+      qs('#analyzeSyllabusFile').disabled=false; qs('#analyzeSyllabusFile').dataset.resourceId=resource.id;
+      toast('Syllabus PDF stored in Appwrite and ready for the Gemini function.');
+    }catch(error){
+      console.error(error); if(uploaded?.$id){try{await window.studentHubCloud.deleteAcademicFile(uploaded.$id);}catch(cleanupError){console.warn(cleanupError);}}
+      if(status){status.textContent=error?.message||'Upload failed.';status.className='upload-status error';}
+      toast('Could not store the syllabus PDF. Check Storage setup and resource metadata columns.');
+    }finally{if(button){button.disabled=false;button.textContent='Upload syllabus PDF';}}
+  }
+
+  function previewGeminiHandoff(){
+    const resourceId=qs('#analyzeSyllabusFile')?.dataset.resourceId;
+    if(!resourceId)return;
+    toast('PDF is securely stored and AI-ready. v0.7 will connect the server-side Gemini extraction function.');
   }
   function parseSyllabusText(text){
     const lines=text.split(/\n+/).map(x=>x.trim()).filter(Boolean); const first=lines[0]?.toLowerCase()||''; const c=state.courses.find(c=>first.includes(c.name.toLowerCase())||first.includes(c.code.toLowerCase()))||state.courses[0]; const out=[];
@@ -535,6 +629,7 @@
 
   function humanDue(date){ const d=daysUntil(date); if(d<0)return 'overdue'; if(d<1&&isToday(date))return `today ${fmtTime(date)}`; if(d<2)return 'tomorrow'; if(d<7)return fmtDate(date,{weekday:'short'}); return fmtDate(date,{month:'short',day:'numeric'}); }
   function formatMinutes(m=0){ m=Math.max(0,Math.round(m)); const h=Math.floor(m/60), min=m%60; return h?`${h}h${min?` ${min}m`:''}`:`${min}m`; }
+  function formatBytes(bytes=0){ const n=Math.max(0,Number(bytes)||0); if(n<1024)return `${Math.round(n)} B`; if(n<1024*1024)return `${(n/1024).toFixed(1)} KB`; return `${(n/(1024*1024)).toFixed(1)} MB`; }
   function timeAgo(date){ const m=Math.max(0,Math.round((Date.now()-new Date(date))/60000)); if(m<1)return 'just now'; if(m<60)return `${m}m ago`;const h=Math.floor(m/60);if(h<24)return `${h}h ago`;return `${Math.floor(h/24)}d ago`; }
   function toast(msg){ const el=document.createElement('div');el.className='toast';el.textContent=msg;qs('#toastStack').appendChild(el);setTimeout(()=>el.remove(),3200); }
   function updateBadges(){ const n=state.inbox.filter(i=>!i.processed).length; const b=qs('#inboxBadge'); if(!b)return;b.textContent=n;b.classList.toggle('visible',n>0); }
@@ -585,7 +680,7 @@
 
 
   function rowToResource(row) {
-    return { id:row.$id, cloudId:row.$id, legacyId:row.legacyId||'', courseId:row.courseId, topic:row.topic||'General', type:row.type||'Note', title:row.title||'Untitled resource', description:row.description||'', url:row.url||'', sourceType:row.sourceType||'library', updated:timeAgo(row.$updatedAt||row.$createdAt||new Date()) };
+    return { id:row.$id, cloudId:row.$id, legacyId:row.legacyId||'', courseId:row.courseId, topic:row.topic||'General', type:row.type||'Note', title:row.title||'Untitled resource', description:row.description||'', url:row.url||'', sourceType:row.sourceType||'library', storageFileId:row.storageFileId||'', fileName:row.fileName||'', mimeType:row.mimeType||'', fileSize:Number(row.fileSize||0), updated:timeAgo(row.$updatedAt||row.$createdAt||new Date()) };
   }
 
   function rowToInbox(row) {
@@ -803,6 +898,9 @@
   qsa('.close-modal').forEach(b=>b.addEventListener('click',closeModals));
   qs('#addCourseForm')?.addEventListener('submit',confirmAddCourse);
   qs('#addResourceForm')?.addEventListener('submit',confirmAddResource);
+  qs('#resourceType')?.addEventListener('change',setResourceTypeFields);
+  qs('#uploadSyllabusFile')?.addEventListener('click',uploadSyllabusPdf);
+  qs('#analyzeSyllabusFile')?.addEventListener('click',previewGeminiHandoff);
   qs('#fillExample').addEventListener('click',()=>{qs('#quickAddInput').value='Chem lab report Friday 6pm, probably 2 hours';});
   qs('#parseQuickAdd').addEventListener('click',()=>{const text=qs('#quickAddInput').value.trim();if(!text)return toast('Type something to capture first.');quickParsed=parseNatural(text);showQuickPreview(quickParsed);});
   qs('#confirmQuickAdd').addEventListener('click',confirmQuick);

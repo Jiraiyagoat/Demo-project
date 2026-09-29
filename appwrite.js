@@ -12,7 +12,8 @@
     workBlocksTableId: 'work_blocks',
     resourcesTableId: 'resources',
     inboxTableId: 'inbox_items',
-    studySessionsTableId: 'study_sessions'
+    studySessionsTableId: 'study_sessions',
+    academicFilesBucketId: 'academic_files'
   });
 
   if (!window.Appwrite) {
@@ -27,6 +28,7 @@
 
   const account = new Appwrite.Account(client);
   const tablesDB = new Appwrite.TablesDB(client);
+  const storage = new Appwrite.Storage(client);
 
   const privatePermissions = userId => [
     Appwrite.Permission.read(Appwrite.Role.user(userId)),
@@ -144,13 +146,18 @@
 
 
   function resourcePayload(user, semester, resource, legacyId='') {
-    return {
+    const data = {
       userId:user.$id, semesterId:semester.$id, legacyId:String(legacyId || resource.legacyId || ''),
       courseId:String(resource.courseId || ''), topic:String(resource.topic || 'General').slice(0,120),
       type:String(resource.type || 'Note').slice(0,32), title:String(resource.title || 'Untitled resource').slice(0,200),
       description:String(resource.description || '').slice(0,500), url:String(resource.url || '').slice(0,500),
       sourceType:String(resource.sourceType || 'library').slice(0,32)
     };
+    if (resource.storageFileId) data.storageFileId = String(resource.storageFileId).slice(0,64);
+    if (resource.fileName) data.fileName = String(resource.fileName).slice(0,255);
+    if (resource.mimeType) data.mimeType = String(resource.mimeType).slice(0,120);
+    if (Number.isFinite(Number(resource.fileSize)) && Number(resource.fileSize) >= 0) data.fileSize = Math.round(Number(resource.fileSize));
+    return data;
   }
 
   function inboxPayload(user, semester, item, legacyId='') {
@@ -202,6 +209,45 @@
   }
   async function createStudySession(user, semester, session, legacyId='') {
     return tablesDB.createRow({ databaseId:CONFIG.databaseId, tableId:CONFIG.studySessionsTableId, rowId:Appwrite.ID.unique(), data:studySessionPayload(user,semester,session,legacyId), permissions:privatePermissions(user.$id) });
+  }
+
+
+  function validatePdf(file) {
+    if (!file) throw new Error('Choose a PDF file first.');
+    const name = String(file.name || '').toLowerCase();
+    const isPdf = file.type === 'application/pdf' || name.endsWith('.pdf');
+    if (!isPdf) throw new Error('Only PDF files are supported in v0.6.');
+    const maxBytes = 20 * 1024 * 1024;
+    if (Number(file.size || 0) > maxBytes) throw new Error('PDF must be 20 MB or smaller.');
+  }
+
+  async function uploadAcademicFile(user, semester, file, folder='resources') {
+    validatePdf(file);
+    const safeFolder = `${folder}/${user.$id}/${semester.$id}`;
+    return storage.createFile({
+      bucketId: CONFIG.academicFilesBucketId,
+      fileId: Appwrite.ID.unique(),
+      file,
+      permissions: privatePermissions(user.$id),
+      folder: safeFolder
+    });
+  }
+
+  function getAcademicFileView(fileId) {
+    return storage.getFileView({ bucketId: CONFIG.academicFilesBucketId, fileId });
+  }
+
+  function getAcademicFileDownload(fileId) {
+    return storage.getFileDownload({ bucketId: CONFIG.academicFilesBucketId, fileId });
+  }
+
+  async function deleteAcademicFile(fileId) {
+    if (!fileId) return;
+    return storage.deleteFile({ bucketId: CONFIG.academicFilesBucketId, fileId });
+  }
+
+  async function deleteResource(rowId) {
+    return tablesDB.deleteRow({ databaseId:CONFIG.databaseId, tableId:CONFIG.resourcesTableId, rowId });
   }
 
   async function updateCourse(rowId, patch) { return tablesDB.updateRow({ databaseId:CONFIG.databaseId, tableId:CONFIG.coursesTableId, rowId, data:patch }); }
@@ -299,11 +345,12 @@
   }
 
   window.studentHubCloud = Object.freeze({
-    ready:true, config:CONFIG, client, account, tablesDB,
+    ready:true, config:CONFIG, client, account, tablesDB, storage,
     getCurrentUser, signUp, signIn, signOut, listSemesters, ensureSemester,
     listCourses, listAssessments, listTasks, listWorkBlocks, listResources, listInboxItems, listStudySessions,
     createCourse, createAssessment, createTask, createWorkBlock, createResource, createInboxItem, createStudySession,
-    updateCourse, updateAssessment, updateTask, updateWorkBlock, updateResource, updateInboxItem,
+    updateCourse, updateAssessment, updateTask, updateWorkBlock, updateResource, updateInboxItem, deleteResource,
+    uploadAcademicFile, getAcademicFileView, getAcademicFileDownload, deleteAcademicFile,
     syncAcademicSeed, syncPlannerSeed, syncKnowledgeSeed
   });
 })();

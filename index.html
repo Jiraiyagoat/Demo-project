@@ -233,16 +233,18 @@
       <div><span class="eyebrow">Cloud library</span><h2 id="addResourceTitle">Add a resource</h2></div>
       <button class="icon-btn close-modal" aria-label="Close">×</button>
     </div>
-    <p class="modal-intro">Save notes, links, and PDF references now. Real file uploads arrive in the next Storage milestone.</p>
+    <p class="modal-intro">Notes and links are stored as Library metadata. PDFs are uploaded privately to Appwrite Storage and linked to the same resource record.</p>
     <form id="addResourceForm" class="course-form">
       <div class="course-form-grid">
         <label><span>Type *</span><select id="resourceType"><option>Note</option><option>Link</option><option>PDF</option></select></label>
         <label><span>Course *</span><select id="resourceCourse" required></select></label>
         <label class="course-form-wide"><span>Title *</span><input id="resourceTitle" maxlength="200" required placeholder="Lecture 07 — Eigenvalues" /></label>
         <label><span>Topic</span><input id="resourceTopic" maxlength="120" placeholder="Eigenvalues" /></label>
-        <label><span>URL</span><input id="resourceUrl" type="url" maxlength="500" placeholder="https://..." /></label>
+        <label id="resourceUrlWrap" class="hidden"><span>URL</span><input id="resourceUrl" type="url" maxlength="500" placeholder="https://..." /></label>
+        <label id="resourceFileWrap" class="course-form-wide hidden file-picker"><span>PDF file *</span><input id="resourceFile" type="file" accept="application/pdf,.pdf" /><small>Private upload · PDF only · maximum 20 MB</small></label>
         <label class="course-form-wide"><span>Description</span><textarea id="resourceDescription" rows="4" maxlength="500" placeholder="What this resource contains or why it matters..."></textarea></label>
       </div>
+      <div id="resourceUploadStatus" class="upload-status hidden"></div>
       <div class="modal-actions">
         <button class="btn secondary close-modal" type="button">Cancel</button>
         <button class="btn primary" id="addResourceSubmit" type="submit">Add resource</button>
@@ -260,15 +262,29 @@
 
   <section class="modal hidden wide-modal" id="importModal" role="dialog" aria-modal="true" aria-labelledby="importTitle">
     <div class="modal-header">
-      <div><span class="eyebrow">Zero-API import demo</span><h2 id="importTitle">Paste syllabus text</h2></div>
+      <div><span class="eyebrow">Syllabus intake</span><h2 id="importTitle">Import a syllabus</h2></div>
       <button class="icon-btn close-modal" aria-label="Close">×</button>
     </div>
-    <p class="modal-intro">This first demo intentionally uses a local rule-based parser. In production, this is where an AI extraction service would sit.</p>
-    <textarea id="syllabusInput" rows="12"></textarea>
+    <p class="modal-intro">Upload the original PDF privately to Appwrite now. The Gemini extraction function will use this stored source in the next milestone. You can still test the local text parser below.</p>
+
+    <div class="syllabus-upload-panel">
+      <div class="course-form-grid">
+        <label><span>Course *</span><select id="syllabusCourse"></select></label>
+        <label class="file-picker"><span>Syllabus PDF *</span><input id="syllabusFile" type="file" accept="application/pdf,.pdf" /><small>Private upload · PDF only · maximum 20 MB</small></label>
+      </div>
+      <div id="syllabusFileStatus" class="upload-status hidden"></div>
+      <div class="button-row syllabus-upload-actions">
+        <button class="btn secondary" id="uploadSyllabusFile" type="button">Upload syllabus PDF</button>
+        <button class="btn primary" id="analyzeSyllabusFile" type="button" disabled>Analyze with Gemini</button>
+      </div>
+    </div>
+
+    <div class="modal-divider"><span>or test the local parser</span></div>
+    <textarea id="syllabusInput" rows="10"></textarea>
     <div id="syllabusPreview" class="syllabus-preview hidden"></div>
     <div class="modal-actions">
       <button class="btn secondary close-modal">Cancel</button>
-      <button class="btn secondary" id="parseSyllabus">Detect items</button>
+      <button class="btn secondary" id="parseSyllabus">Detect items locally</button>
       <button class="btn primary hidden" id="confirmSyllabus">Import detected items</button>
     </div>
   </section>

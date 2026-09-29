@@ -13,6 +13,7 @@
     resourcesTableId: 'resources',
     inboxTableId: 'inbox_items',
     studySessionsTableId: 'study_sessions',
+    aiJobsTableId: 'ai_jobs',
     academicFilesBucketId: 'academic_files',
     academicAiFunctionId: 'academic-ai'
   });
@@ -269,8 +270,100 @@
     return parsed || {};
   }
 
-  async function analyzeSyllabusResource(resourceId) {
-    return callAcademicAI('analyzeSyllabus', { resourceId });
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+  async function createAiJob(user, semester, resourceId) {
+    try {
+      return await tablesDB.createRow({
+        databaseId: CONFIG.databaseId,
+        tableId: CONFIG.aiJobsTableId,
+        rowId: Appwrite.ID.unique(),
+        data: {
+          userId: user.$id,
+          semesterId: semester.$id,
+          resourceId: String(resourceId || ''),
+          status: 'queued'
+        },
+        permissions: privatePermissions(user.$id)
+      });
+    } catch (error) {
+      if (error?.code === 404 || /table/i.test(String(error?.message || ''))) {
+        throw new Error('AI background jobs are not configured yet. Create the ai_jobs table from APPWRITE_V074_SETUP.md.');
+      }
+      throw error;
+    }
+  }
+
+  async function getAiJob(jobId) {
+    return tablesDB.getRow({
+      databaseId: CONFIG.databaseId,
+      tableId: CONFIG.aiJobsTableId,
+      rowId: jobId
+    });
+  }
+
+  async function deleteAiJob(jobId) {
+    if (!jobId) return;
+    return tablesDB.deleteRow({
+      databaseId: CONFIG.databaseId,
+      tableId: CONFIG.aiJobsTableId,
+      rowId: jobId
+    });
+  }
+
+  async function analyzeSyllabusResource(resourceId, user, semester) {
+    if (!user?.$id || !semester?.$id) throw new Error('Sign in and load a semester before using Academic AI.');
+
+    const job = await createAiJob(user, semester, resourceId);
+    let executionStarted = false;
+
+    try {
+      await functions.createExecution({
+        functionId: CONFIG.academicAiFunctionId,
+        body: JSON.stringify({
+          action: 'analyzeSyllabusAsync',
+          resourceId,
+          jobId: job.$id
+        }),
+        async: true,
+        path: '/',
+        method: 'POST',
+        headers: { 'content-type': 'application/json' }
+      });
+      executionStarted = true;
+
+      const deadline = Date.now() + 180000;
+      while (Date.now() < deadline) {
+        await sleep(1800);
+        const fresh = await getAiJob(job.$id);
+        const status = String(fresh?.status || '').toLowerCase();
+
+        if (status === 'completed') {
+          let result = null;
+          try { result = fresh?.result ? JSON.parse(fresh.result) : null; } catch (_) {}
+          try { await deleteAiJob(job.$id); } catch (_) {}
+          if (!result || result?.ok === false) {
+            throw new Error(result?.error || 'Academic AI completed without a readable result.');
+          }
+          return result;
+        }
+
+        if (status === 'failed') {
+          const message = fresh?.error || 'Academic AI background job failed.';
+          try { await deleteAiJob(job.$id); } catch (_) {}
+          const err = new Error(message);
+          err.code = 500;
+          throw err;
+        }
+      }
+
+      throw new Error('Academic AI is still processing after 3 minutes. Check the latest Function execution and ai_jobs row.');
+    } catch (error) {
+      if (!executionStarted) {
+        try { await deleteAiJob(job.$id); } catch (_) {}
+      }
+      throw error;
+    }
   }
 
   async function getPrivateFileUrl(resourceId) {

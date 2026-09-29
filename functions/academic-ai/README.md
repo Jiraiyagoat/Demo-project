@@ -37,3 +37,14 @@ Recommended Appwrite variable:
 `OPENROUTER_MODEL=openrouter/free`
 
 429 responses now return a useful message and preserve provider detail for debugging.
+
+
+## v0.7.4 asynchronous syllabus analysis
+
+Syllabus analysis now runs as an asynchronous Appwrite Function execution to avoid
+Appwrite's 30-second hard limit for synchronous executions.
+
+The browser creates a private row in `ai_jobs`, starts `analyzeSyllabusAsync`, and polls
+that row until the Function stores the completed structured result.
+
+Required `ai_jobs` columns are documented in `APPWRITE_V074_SETUP.md`.

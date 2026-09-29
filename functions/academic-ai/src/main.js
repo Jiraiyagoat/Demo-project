@@ -1,5 +1,6 @@
 const DATABASE_ID = 'student_hub';
 const RESOURCES_TABLE_ID = 'resources';
+const AI_JOBS_TABLE_ID = 'ai_jobs';
 const BUCKET_ID = 'academic_files';
 const DEFAULT_MODEL = 'openrouter/free';
 
@@ -42,6 +43,31 @@ function appwriteUserHeaders(projectId, jwt) {
     'X-Appwrite-Project': projectId,
     'X-Appwrite-JWT': jwt
   };
+}
+
+
+async function getOwnedAiJob({ endpoint, projectId, jwt, userId, jobId, resourceId }) {
+  if (!jobId) throw Object.assign(new Error('Missing jobId.'), { status: 400 });
+  const url = `${endpoint}/tablesdb/${encodeURIComponent(DATABASE_ID)}/tables/${encodeURIComponent(AI_JOBS_TABLE_ID)}/rows/${encodeURIComponent(jobId)}`;
+  const response = await fetch(url, { headers: appwriteUserHeaders(projectId, jwt) });
+  const job = await parseJsonResponse(response, 'AI job lookup');
+  if (String(job.userId || '') !== String(userId || '')) {
+    throw Object.assign(new Error('This AI job does not belong to the signed-in user.'), { status: 403 });
+  }
+  if (resourceId && String(job.resourceId || '') !== String(resourceId || '')) {
+    throw Object.assign(new Error('AI job resource mismatch.'), { status: 400 });
+  }
+  return job;
+}
+
+async function updateOwnedAiJob({ endpoint, projectId, jwt, jobId, data }) {
+  const url = `${endpoint}/tablesdb/${encodeURIComponent(DATABASE_ID)}/tables/${encodeURIComponent(AI_JOBS_TABLE_ID)}/rows/${encodeURIComponent(jobId)}`;
+  const response = await fetch(url, {
+    method: 'PATCH',
+    headers: appwriteUserHeaders(projectId, jwt),
+    body: JSON.stringify({ data })
+  });
+  return parseJsonResponse(response, 'AI job update');
 }
 
 async function getOwnedResource({ endpoint, projectId, jwt, userId, resourceId }) {
@@ -287,6 +313,54 @@ export default async ({ req, res, log, error }) => {
       const resource = await getOwnedResource({ endpoint, projectId, jwt, userId, resourceId: body.resourceId });
       const result = await createPrivateFileUrl({ endpoint, projectId, serverKey, resource });
       return res.json({ ok: true, ...result });
+    }
+
+    if (action === 'analyzeSyllabusAsync') {
+      const jobId = cleanText(body.jobId, 64);
+      const resourceId = cleanText(body.resourceId, 64);
+      await getOwnedAiJob({ endpoint, projectId, jwt, userId, jobId, resourceId });
+      await updateOwnedAiJob({
+        endpoint, projectId, jwt, jobId,
+        data: { status: 'processing', error: '' }
+      });
+
+      try {
+        const resource = await getOwnedResource({ endpoint, projectId, jwt, userId, resourceId });
+        const pdf = await downloadOwnedPdf({ endpoint, projectId, jwt, resource });
+        log(`Analyzing syllabus resource ${resource.$id} (${pdf.length} bytes) for user ${userId} with OpenRouter async job ${jobId}.`);
+        const result = await analyzeWithOpenRouter(pdf, resource);
+        const output = {
+          ok: true,
+          provider: 'openrouter',
+          resourceId: resource.$id,
+          sourceFileName: resource.fileName || resource.title || 'syllabus.pdf',
+          ...result
+        };
+
+        await updateOwnedAiJob({
+          endpoint, projectId, jwt, jobId,
+          data: {
+            status: 'completed',
+            result: JSON.stringify(output),
+            error: ''
+          }
+        });
+
+        return res.json({ ok: true, jobId, status: 'completed' });
+      } catch (jobError) {
+        try {
+          await updateOwnedAiJob({
+            endpoint, projectId, jwt, jobId,
+            data: {
+              status: 'failed',
+              error: cleanText(jobError?.message || 'Academic AI background job failed.', 10000)
+            }
+          });
+        } catch (updateError) {
+          error?.(`Could not update failed AI job ${jobId}: ${updateError?.stack || updateError}`);
+        }
+        throw jobError;
+      }
     }
 
     if (action === 'analyzeSyllabus') {

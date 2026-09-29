@@ -613,12 +613,12 @@
     if(!resourceId)return toast('Upload a syllabus PDF first.');
     const button=qs('#analyzeSyllabusFile'); const status=qs('#syllabusFileStatus');
     if(button){button.disabled=true;button.textContent='Analyzing…';}
-    if(status){status.textContent='Academic AI is reading the private syllabus through the Appwrite Function…';status.className='upload-status active';}
+    if(status){status.textContent='Academic AI job queued securely. Reading the private syllabus in the background…';status.className='upload-status active';}
     const review=qs('#aiSyllabusReview');
-    if(review){review.innerHTML='<div class="ai-loading-state"><span class="ai-spinner" aria-hidden="true"></span><div><strong>Reading your syllabus</strong><p>Extracting course details, assessments and topics. Free models can take a little longer.</p></div></div>';review.classList.remove('hidden');}
+    if(review){review.innerHTML='<div class="ai-loading-state"><span class="ai-spinner" aria-hidden="true"></span><div><strong>Reading your syllabus</strong><p>Extracting course details, assessments and topics in the background. You can safely wait here beyond 30 seconds.</p></div></div>';review.classList.remove('hidden');}
     qs('#importAiSyllabus')?.classList.add('hidden');
     try{
-      const result=await window.studentHubCloud.analyzeSyllabusResource(resourceId);
+      const result=await window.studentHubCloud.analyzeSyllabusResource(resourceId,cloudUser,cloudSemester);
       aiSyllabusResult=result;
       showAiSyllabusReview(result);
       if(status){status.textContent=`AI analysis complete · ${result.model||'AI model'} · review everything before importing.`;status.className='upload-status success';}

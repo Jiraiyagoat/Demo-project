@@ -1,4 +1,4 @@
-const CACHE = 'student-hub-v10-1';
+const CACHE = 'student-hub-v10-2';
 const ASSETS = [
   './',
   './index.html',

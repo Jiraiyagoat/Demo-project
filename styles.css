@@ -820,3 +820,34 @@ body.focus-mode .focus-mode-button{display:inline-flex!important}
 }
 
 .focus-head-actions{display:flex;align-items:center;gap:8px}.focus-exit-inline{display:none}body.focus-mode .focus-exit-inline{display:inline-flex!important}
+
+
+/* v1.0.2 — planner containment hardening */
+.week-grid.redesigned > .day-column.redesigned,
+.day-column.redesigned .deadline-stack,
+.day-column.redesigned .day-event-stack,
+.day-column.redesigned .deadline-flag,
+.day-column.redesigned .event-card,
+.day-column.redesigned .work-group-card {
+  min-width:0;
+  max-width:100%;
+}
+.day-column.redesigned .event-card,
+.day-column.redesigned .work-group-card,
+.day-column.redesigned .deadline-flag {
+  width:100%;
+}
+.day-column.redesigned .event-card strong,
+.day-column.redesigned .work-group-card strong {
+  min-width:0;
+  max-width:100%;
+  overflow-wrap:anywhere;
+  word-break:break-word;
+}
+.day-column.redesigned .event-card small,
+.day-column.redesigned .event-course-meta,
+.day-column.redesigned .work-group-card small {
+  min-width:0;
+  max-width:100%;
+}
+.day-column.redesigned { overflow:hidden; }

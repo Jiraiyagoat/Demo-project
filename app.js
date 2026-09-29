@@ -811,7 +811,17 @@
     if(!t.context.courseId&&contextCourse) t.context.courseId=contextCourse.id;
     const contextTopic=t.context.topic||contextAssessment?.topics?.[0]||'Focused study';
     const displayTitle=contextTask?`${contextAssessment?.title||'Task'} · ${contextTask.title}`:(contextAssessment?.title||contextTopic);
-    const matchingResources=state.resources.filter(r=>r.courseId===contextCourse?.id && (!contextTopic||contextTopic==='Focused study'||topicKey(r.topic)===topicKey(contextTopic))).slice(0,5);
+    const studyTopics=new Set([contextTopic,...(contextAssessment?.topics||[])].map(topicKey).filter(Boolean));
+    const courseResources=state.resources.filter(r=>r.courseId===contextCourse?.id);
+    const matchingResources=courseResources.map((r,index)=>{
+      const key=topicKey(r.topic);
+      let score=0;
+      if(contextTopic==='Focused study') score+=20;
+      if(key&&key===topicKey(contextTopic)) score+=100;
+      else if(key&&studyTopics.has(key)) score+=70;
+      if(String(r.topic||'').toLowerCase()==='syllabus'||r.sourceType==='syllabus_upload') score+=8;
+      return {r,score,index};
+    }).sort((a,b)=>b.score-a.score||a.index-b.index).slice(0,5).map(x=>x.r);
     const recent=[...(state.studySessions||[])].sort((a,b)=>new Date(b.completedAt)-new Date(a.completedAt)).slice(0,6);
     const totalMinutes=(state.studySessions||[]).reduce((sum,x)=>sum+Number(x.minutes||0),0);
     const duration=Math.max(5,Math.round((t.initialSeconds||t.seconds||25*60)/60));

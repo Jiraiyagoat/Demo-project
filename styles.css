@@ -551,3 +551,19 @@ body.dark .auth-card { box-shadow: 0 30px 100px rgba(0,0,0,.4); }
 .modal-divider { display:flex; align-items:center; gap:10px; margin:16px 0; color:var(--muted); font-size:9px; font-weight:800; text-transform:uppercase; letter-spacing:.08em; }
 .modal-divider::before,.modal-divider::after { content:""; height:1px; background:var(--line); flex:1; }
 @media (max-width:680px) { .syllabus-upload-actions { justify-content:stretch; } .syllabus-upload-actions .btn { flex:1; } }
+
+/* v0.7 — Gemini syllabus review */
+.ai-syllabus-review{margin-top:16px;border:1px solid var(--border);border-radius:18px;background:var(--surface-2);padding:18px}
+.ai-review-head{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;margin-bottom:16px}
+.ai-review-head h3{margin:4px 0 5px;font-size:18px}.ai-review-head p{margin:0;color:var(--muted);font-size:11px}
+.ai-course-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.ai-course-grid .ai-wide{grid-column:1/-1}
+.ai-course-grid label,.mini-field{display:flex;flex-direction:column;gap:5px}.ai-course-grid label>span,.mini-field>span{font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:800}
+.ai-course-grid input,.ai-assessment-row input,.ai-assessment-row select{width:100%;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:10px;padding:9px 10px;font:inherit;font-size:11px;outline:none}
+.ai-review-section{margin-top:18px}.ai-review-title{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}.ai-review-title small{color:var(--muted)}
+.ai-assessment-list{display:flex;flex-direction:column;gap:8px}.ai-assessment-row{display:grid;grid-template-columns:28px minmax(160px,2fr) 110px 125px 100px 100px 110px;gap:7px;align-items:end;padding:9px;border:1px solid var(--border);border-radius:12px;background:var(--surface)}
+.ai-check{align-self:center;display:grid;place-items:center}.ai-check input,.ai-topic input{accent-color:var(--accent)}.ai-title{font-weight:700}
+.ai-topic-list{display:flex;gap:7px;flex-wrap:wrap}.ai-topic{display:flex;align-items:center;gap:6px;border:1px solid var(--border);border-radius:999px;padding:7px 10px;background:var(--surface);font-size:10px}
+.ai-warning-box{margin-top:14px;border:1px solid rgba(217,144,54,.35);background:rgba(217,144,54,.08);border-radius:12px;padding:12px}.ai-warning-box strong{font-size:11px}.ai-warning-box p{margin:5px 0 0;color:var(--muted);font-size:10px}
+.ai-source-note,.muted-small{color:var(--muted);font-size:9px;margin:12px 0 0}.ai-import-actions{justify-content:flex-end;margin-top:12px}.empty-state.compact{min-height:80px;padding:18px}
+@media(max-width:1100px){.ai-assessment-row{grid-template-columns:28px 1fr 110px 125px 100px}.ai-assessment-row .mini-field{grid-column:span 2}}
+@media(max-width:760px){.ai-course-grid{grid-template-columns:1fr}.ai-course-grid .ai-wide{grid-column:auto}.ai-assessment-row{grid-template-columns:26px 1fr}.ai-assessment-row>*:not(.ai-check){grid-column:2}.ai-assessment-row .mini-field{grid-column:2}}

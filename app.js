@@ -87,6 +87,7 @@
   let activeCourseTab = 'overview';
   let quickParsed = null;
   let syllabusParsed = [];
+  let aiSyllabusResult = null;
   let timerHandle = null;
   let cloudUser = null;
   let cloudSemester = null;
@@ -257,7 +258,7 @@
     const c=course(r.courseId);
     const icon={PDF:'▤',Note:'✎',Link:'↗'}[r.type]||'•';
     const action=r.storageFileId
-      ? `<button class="resource-open resource-action" data-open-file="${esc(r.storageFileId)}">Open PDF ↗</button>`
+      ? `<button class="resource-open resource-action" data-open-resource="${esc(r.id)}">Open PDF ↗</button>`
       : r.url ? `<a class="resource-open" href="${esc(r.url)}" target="_blank" rel="noopener">Open ↗</a>` : '';
     const fileMeta=r.storageFileId ? `<div class="file-meta">${esc(r.fileName||'Stored PDF')} · ${formatBytes(r.fileSize||0)}</div>` : '';
     const remove=r.storageFileId ? `<button class="resource-delete" data-delete-resource="${esc(r.id)}">Delete</button>` : '';
@@ -273,7 +274,7 @@
     const academicLabel = academicCloudReady ? 'Courses + assessments cloud' : 'Academic cloud unavailable';
     const plannerLabel = plannerCloudReady ? 'Tasks + work blocks cloud' : 'Planner cloud unavailable';
     const knowledgeLabel = knowledgeCloudReady ? 'Library + Inbox + study cloud' : 'Knowledge cloud unavailable';
-    return `<div class="settings-grid"><article class="card setting-card"><h3>Weekly study capacity</h3><p>The workload engine compares estimated required work with the time you realistically have.</p><label class="eyebrow" for="capacityInput">Hours / week</label><input id="capacityInput" type="number" min="1" max="80" step=".5" value="${state.semester.availableMinutesPerWeek/60}" style="width:100%;margin-top:7px"/></article><article class="card setting-card"><h3>Cloud academic data</h3><p>Semester, courses, assessments, planner tasks, work blocks, resources, Inbox, and study sessions use Appwrite.</p><span class="pill ${academicCloudReady?'success':''}">${academicLabel}</span> <span class="pill ${plannerCloudReady?'success':''}">${plannerLabel}</span> <span class="pill ${knowledgeCloudReady?'success':''}">${knowledgeLabel}</span></article><article class="card setting-card"><h3>Private academic files</h3><p>PDFs can now be stored in the private <strong>academic_files</strong> Appwrite Storage bucket and linked to Library resources.</p><span class="pill ${window.studentHubCloud?.storage?'success':''}">${window.studentHubCloud?.storage?'Storage client ready':'Storage unavailable'}</span></article><article class="card setting-card"><h3>Next backend step</h3><p>Syllabus PDFs now have a secure upload path. The next milestone connects an Appwrite Function to Gemini for structured extraction and review.</p><span class="pill">Gemini function next</span></article></div>`;
+    return `<div class="settings-grid"><article class="card setting-card"><h3>Weekly study capacity</h3><p>The workload engine compares estimated required work with the time you realistically have.</p><label class="eyebrow" for="capacityInput">Hours / week</label><input id="capacityInput" type="number" min="1" max="80" step=".5" value="${state.semester.availableMinutesPerWeek/60}" style="width:100%;margin-top:7px"/></article><article class="card setting-card"><h3>Cloud academic data</h3><p>Semester, courses, assessments, planner tasks, work blocks, resources, Inbox, and study sessions use Appwrite.</p><span class="pill ${academicCloudReady?'success':''}">${academicLabel}</span> <span class="pill ${plannerCloudReady?'success':''}">${plannerLabel}</span> <span class="pill ${knowledgeCloudReady?'success':''}">${knowledgeLabel}</span></article><article class="card setting-card"><h3>Private academic files</h3><p>PDFs are stored privately in <strong>academic_files</strong>. Short-lived server-generated tokens are used when you open a PDF.</p><span class="pill ${window.studentHubCloud?.storage?'success':''}">${window.studentHubCloud?.storage?'Storage ready':'Storage unavailable'}</span></article><article class="card setting-card"><h3>Academic AI</h3><p>The <strong>academic-ai</strong> Appwrite Function reads your private syllabus as you, sends it to Gemini server-side, and returns reviewable structured data.</p><span class="pill ${window.studentHubCloud?.functions?'success':''}">${window.studentHubCloud?.functions?'Function client ready':'Function unavailable'}</span></article></div>`;
   }
 
   function bindPageEvents(){
@@ -295,7 +296,7 @@
     qs('#nextQuestion')?.addEventListener('click',()=>{state.practiceIndex=(state.practiceIndex+1)%practiceBank.length;save();render();});
     qs('#librarySearch')?.addEventListener('input',e=>{const q=e.target.value.toLowerCase();qsa('[data-resource-text]').forEach(card=>card.style.display=card.dataset.resourceText.includes(q)?'':'none');});
     qs('#openAddResource')?.addEventListener('click',openResourceModal);
-    qsa('[data-open-file]').forEach(b=>b.onclick=()=>openStoredFile(b.dataset.openFile));
+    qsa('[data-open-resource]').forEach(b=>b.onclick=()=>openStoredResource(b.dataset.openResource));
     qsa('[data-delete-resource]').forEach(b=>b.onclick=()=>deleteStoredResource(b.dataset.deleteResource));
     qs('#captureInbox')?.addEventListener('click',captureInboxItem);
     qsa('[data-organize]').forEach(b=>b.onclick=()=>{const i=state.inbox.find(x=>x.id===b.dataset.organize); if(!i)return; openQuickAdd(i.text, i.id);});
@@ -481,13 +482,16 @@
     finally{if(button){button.disabled=false;button.textContent='Add resource';}}
   }
 
-  function openStoredFile(fileId){
+  async function openStoredResource(resourceId){
+    const tab=window.open('about:blank','_blank');
     try{
-      const view=window.studentHubCloud?.getAcademicFileView?.(fileId);
-      const url=view?.href||view?.toString?.()||String(view||'');
-      if(!url)return toast('Could not build the private file view URL.');
-      window.open(url,'_blank','noopener,noreferrer');
-    }catch(error){console.error(error);toast('Could not open this PDF. Check file permissions.');}
+      const result=await window.studentHubCloud?.getPrivateFileUrl?.(resourceId);
+      if(!result?.url)throw new Error('The Academic AI function did not return a file URL.');
+      if(tab){tab.opener=null;tab.location.href=result.url;}else window.location.href=result.url;
+    }catch(error){
+      console.error(error); if(tab)tab.close();
+      toast(error?.message||'Could not open this private PDF. Check the academic-ai function.');
+    }
   }
 
   async function deleteStoredResource(resourceId){
@@ -557,14 +561,27 @@
     }
   }
 
+  function syncSyllabusSourceSelection(){
+    const courseId=qs('#syllabusCourse')?.value;
+    const existing=[...(state.resources||[])].find(r=>r.courseId===courseId&&r.storageFileId&&(r.sourceType==='syllabus_upload'||r.topic==='Syllabus'));
+    const analyze=qs('#analyzeSyllabusFile'); const status=qs('#syllabusFileStatus');
+    if(existing){
+      analyze.disabled=false; analyze.dataset.resourceId=existing.id;
+      if(status){status.textContent=`Stored syllabus ready: ${existing.fileName||existing.title} · ${formatBytes(existing.fileSize||0)}`;status.className='upload-status success';}
+    }else{
+      analyze.disabled=true; analyze.dataset.resourceId='';
+      if(status){status.textContent='';status.className='upload-status hidden';}
+    }
+    aiSyllabusResult=null; qs('#aiSyllabusReview')?.classList.add('hidden'); if(qs('#aiSyllabusReview'))qs('#aiSyllabusReview').innerHTML=''; qs('#importAiSyllabus')?.classList.add('hidden');
+  }
+
   function openImport(){
     const tomorrow=addDays(new Date(),1), d5=addDays(new Date(),5), d12=addDays(new Date(),12);
     qs('#syllabusInput').value=`STAT210 Statistics\nProfessor: Dr. Park\nProblem Set 3 due ${isoDate(tomorrow)} 23:59 | estimated 2h\nQuiz: Probability & Distributions due ${isoDate(d5)} 14:00 | estimated 1h\nMidterm Exam due ${isoDate(d12)} 10:00 | estimated 5h`;
     const courseSelect=qs('#syllabusCourse'); if(courseSelect)courseSelect.innerHTML=state.courses.map(c=>`<option value="${c.id}">${esc(c.code)} · ${esc(c.name)}</option>`).join('');
     if(qs('#syllabusFile'))qs('#syllabusFile').value='';
-    qs('#syllabusFileStatus').className='upload-status hidden'; qs('#syllabusFileStatus').textContent='';
-    qs('#analyzeSyllabusFile').disabled=true; qs('#analyzeSyllabusFile').dataset.resourceId='';
-    qs('#syllabusPreview').classList.add('hidden');qs('#confirmSyllabus').classList.add('hidden');syllabusParsed=[];openModal(qs('#importModal'));
+    qs('#syllabusPreview').classList.add('hidden');qs('#confirmSyllabus').classList.add('hidden');syllabusParsed=[];
+    syncSyllabusSourceSelection(); openModal(qs('#importModal'));
   }
 
   async function uploadSyllabusPdf(){
@@ -591,11 +608,93 @@
     }finally{if(button){button.disabled=false;button.textContent='Upload syllabus PDF';}}
   }
 
-  function previewGeminiHandoff(){
+  async function analyzeStoredSyllabus(){
     const resourceId=qs('#analyzeSyllabusFile')?.dataset.resourceId;
-    if(!resourceId)return;
-    toast('PDF is securely stored and AI-ready. v0.7 will connect the server-side Gemini extraction function.');
+    if(!resourceId)return toast('Upload a syllabus PDF first.');
+    const button=qs('#analyzeSyllabusFile'); const status=qs('#syllabusFileStatus');
+    if(button){button.disabled=true;button.textContent='Analyzing…';}
+    if(status){status.textContent='Gemini is reading the private syllabus through the Appwrite Function…';status.className='upload-status active';}
+    try{
+      const result=await window.studentHubCloud.analyzeSyllabusResource(resourceId);
+      aiSyllabusResult=result;
+      showAiSyllabusReview(result);
+      if(status){status.textContent=`Gemini analysis complete · ${result.model||'Flash model'} · review everything before importing.`;status.className='upload-status success';}
+      toast(`Detected ${(result.extraction?.assessments||[]).length} assessment${(result.extraction?.assessments||[]).length===1?'':'s'} for review.`);
+    }catch(error){
+      console.error(error);
+      if(status){status.textContent=error?.message||'Gemini analysis failed.';status.className='upload-status error';}
+      toast(error?.message||'Could not analyze the syllabus. Check the academic-ai Function execution.');
+    }finally{if(button){button.disabled=false;button.textContent='Analyze with Gemini';}}
   }
+
+  function normalizeAssessmentType(value){
+    const v=String(value||'').toLowerCase();
+    if(v.includes('quiz'))return 'Quiz'; if(v.includes('exam')||v.includes('midterm')||v.includes('final'))return 'Exam'; if(v.includes('project')||v.includes('presentation'))return 'Project'; if(v.includes('assignment')||v.includes('homework')||v.includes('problem')||v.includes('report')||v.includes('lab'))return 'Assignment'; return 'Other';
+  }
+
+  function defaultEffortForType(type){ const t=normalizeAssessmentType(type); return t==='Exam'?300:t==='Project'?360:t==='Quiz'?60:t==='Assignment'?120:60; }
+
+  function showAiSyllabusReview(result){
+    const extraction=result?.extraction||{}; const c=extraction.course||{}; const items=Array.isArray(extraction.assessments)?extraction.assessments:[]; const topics=Array.isArray(extraction.topics)?extraction.topics:[]; const warnings=Array.isArray(extraction.warnings)?extraction.warnings:[];
+    const current=course(qs('#syllabusCourse')?.value)||state.courses[0]||{};
+    const review=qs('#aiSyllabusReview'); if(!review)return;
+    review.innerHTML=`<div class="ai-review-head"><div><span class="eyebrow">Gemini extraction</span><h3>Review before importing</h3><p>AI output is a draft. Edit or uncheck anything that is wrong.</p></div><span class="pill success">${esc(result?.model||'Gemini')}</span></div>
+      <div class="ai-course-grid">
+        <label><span>Course code</span><input id="aiCourseCode" maxlength="32" value="${esc(c.code||current.code||'')}" /></label>
+        <label><span>Course name</span><input id="aiCourseName" maxlength="120" value="${esc(c.name||current.name||'')}" /></label>
+        <label><span>Instructor</span><input id="aiCourseTeacher" maxlength="120" value="${esc(c.instructor||current.teacher||'')}" /></label>
+        <label><span>Room</span><input id="aiCourseRoom" maxlength="80" value="${esc(c.room||current.room||'')}" /></label>
+        <label class="ai-wide"><span>Schedule</span><input id="aiCourseSchedule" maxlength="160" value="${esc(c.schedule||current.schedule||'')}" /></label>
+      </div>
+      <div class="ai-review-section"><div class="ai-review-title"><strong>Assessments</strong><small>${items.length} detected</small></div><div class="ai-assessment-list">${items.length?items.map((a,index)=>{const hasDate=/^\d{4}-\d{2}-\d{2}$/.test(a.dueDate||'');const effort=Number(a.effortMinutes)||defaultEffortForType(a.type);return `<div class="ai-assessment-row"><label class="ai-check"><input type="checkbox" class="ai-assessment-check" data-ai-index="${index}" ${hasDate?'checked':''}/></label><input class="ai-title" data-ai-field="title" data-ai-index="${index}" value="${esc(a.title||'')}"/><select data-ai-field="type" data-ai-index="${index}">${['Assignment','Quiz','Exam','Project','Other'].map(t=>`<option ${normalizeAssessmentType(a.type)===t?'selected':''}>${t}</option>`).join('')}</select><input type="date" data-ai-field="date" data-ai-index="${index}" value="${esc(a.dueDate||'')}"/><input type="time" data-ai-field="time" data-ai-index="${index}" value="${esc(a.dueTime||'23:59')}"/><label class="mini-field"><span>Weight %</span><input type="number" min="0" max="100" step="0.1" data-ai-field="weight" data-ai-index="${index}" value="${Number(a.weight)||0}"/></label><label class="mini-field"><span>Effort min</span><input type="number" min="1" max="10000" step="5" data-ai-field="effort" data-ai-index="${index}" value="${effort}"/></label></div>`}).join(''):`<div class="empty-state compact"><p>No dated assessments were detected.</p></div>`}</div></div>
+      <div class="ai-review-section"><div class="ai-review-title"><strong>Topics</strong><small>Select concepts to merge into ${esc(current.name||'the course')}</small></div><div class="ai-topic-list">${topics.length?topics.map((topic,index)=>`<label class="ai-topic"><input type="checkbox" class="ai-topic-check" value="${esc(topic)}" checked/><span>${esc(topic)}</span></label>`).join(''):`<span class="muted-small">No explicit topic list detected.</span>`}</div></div>
+      ${warnings.length?`<div class="ai-warning-box"><strong>Gemini flagged</strong>${warnings.map(w=>`<p>• ${esc(w)}</p>`).join('')}</div>`:''}
+      <p class="ai-source-note">Source: ${esc(result?.sourceFileName||'stored syllabus PDF')} · Nothing is imported until you confirm.</p>`;
+    review.classList.remove('hidden'); qs('#importAiSyllabus')?.classList.remove('hidden');
+  }
+
+  async function importReviewedAiSyllabus(){
+    if(!aiSyllabusResult?.extraction)return;
+    if(!academicCloudReady||!cloudUser||!cloudSemester)return toast('Academic cloud sync must be ready before importing.');
+    const courseId=qs('#syllabusCourse')?.value; const target=course(courseId); if(!target)return toast('Select a course to update.');
+    const button=qs('#importAiSyllabus'); if(button){button.disabled=true;button.textContent='Importing…';}
+    try{
+      const selectedTopics=qsa('.ai-topic-check:checked').map(x=>x.value.trim()).filter(Boolean);
+      const mergedTopics=[...new Set([...(target.topics||[]),...selectedTopics])].slice(0,40);
+      const patch={
+        code:qs('#aiCourseCode')?.value.trim()||target.code,
+        name:qs('#aiCourseName')?.value.trim()||target.name,
+        teacher:qs('#aiCourseTeacher')?.value.trim()||target.teacher||'',
+        room:qs('#aiCourseRoom')?.value.trim()||target.room||'',
+        schedule:qs('#aiCourseSchedule')?.value.trim()||target.schedule||'',
+        topics:mergedTopics
+      };
+      await window.studentHubCloud.updateCourse(target.cloudId||target.id,patch);
+      Object.assign(target,patch);
+
+      let imported=0, skipped=0;
+      for(const check of qsa('.ai-assessment-check:checked')){
+        const index=Number(check.dataset.aiIndex); const src=aiSyllabusResult.extraction.assessments[index]||{};
+        const title=qs(`[data-ai-field="title"][data-ai-index="${index}"]`)?.value.trim();
+        const type=qs(`[data-ai-field="type"][data-ai-index="${index}"]`)?.value||'Assignment';
+        const date=qs(`[data-ai-field="date"][data-ai-index="${index}"]`)?.value||'';
+        const time=qs(`[data-ai-field="time"][data-ai-index="${index}"]`)?.value||'23:59';
+        const weight=Number(qs(`[data-ai-field="weight"][data-ai-index="${index}"]`)?.value||0);
+        const effort=Math.max(1,Math.round(Number(qs(`[data-ai-field="effort"][data-ai-index="${index}"]`)?.value||defaultEffortForType(type))));
+        if(!title||!date){skipped++;continue;}
+        const dueLocal=new Date(`${date}T${time||'23:59'}:00`); if(Number.isNaN(dueLocal.getTime())){skipped++;continue;}
+        const duplicate=state.assessments.some(a=>a.courseId===target.id&&a.title.trim().toLowerCase()===title.toLowerCase()&&isoDate(a.due)===date);
+        if(duplicate){skipped++;continue;}
+        const draft={id:uid('a'),courseId:target.id,title,type,due:dueLocal.toISOString(),effort,remaining:effort,status:'not_started',weight:Number.isFinite(weight)?weight:0,topics:Array.isArray(src.topics)?src.topics:[],sourceType:'syllabus_ai'};
+        const row=await window.studentHubCloud.createAssessment(cloudUser,cloudSemester,draft,target.id,draft.id);
+        state.assessments.push(rowToAssessment(row)); imported++;
+      }
+      save(); closeModals(); render(); updateCloudStatusCard();
+      toast(`Gemini import complete: ${imported} assessment${imported===1?'':'s'} added${skipped?`, ${skipped} skipped`:''}.`);
+    }catch(error){console.error(error);toast(error?.message||'Could not import the reviewed syllabus.');}
+    finally{if(button){button.disabled=false;button.textContent='Import reviewed syllabus';}}
+  }
+
   function parseSyllabusText(text){
     const lines=text.split(/\n+/).map(x=>x.trim()).filter(Boolean); const first=lines[0]?.toLowerCase()||''; const c=state.courses.find(c=>first.includes(c.name.toLowerCase())||first.includes(c.code.toLowerCase()))||state.courses[0]; const out=[];
     lines.forEach(line=>{ const lower=line.toLowerCase(); if(!/due|exam|quiz|assignment|project|problem set|report/.test(lower))return; const dm=line.match(/(20\d{2}-\d{2}-\d{2})(?:\s+(\d{1,2}:\d{2}))?/); if(!dm)return; const effort=line.match(/estimated\s+(\d+(?:\.\d+)?)\s*(h|hours?|m|minutes?)/i); let mins=60;if(effort)mins=/^h/.test(effort[2].toLowerCase())?Number(effort[1])*60:Number(effort[1]); let title=line.split(/\bdue\b/i)[0].replace(/^[-•]\s*/,'').trim(); let type=/exam|midterm|final/i.test(title)?'Exam':/quiz/i.test(title)?'Quiz':/project/i.test(title)?'Project':'Assignment';out.push({courseId:c.id,title,type,due:new Date(`${dm[1]}T${dm[2]||'23:59'}:00`).toISOString(),effort:Math.round(mins)}); }); return out;
@@ -899,8 +998,10 @@
   qs('#addCourseForm')?.addEventListener('submit',confirmAddCourse);
   qs('#addResourceForm')?.addEventListener('submit',confirmAddResource);
   qs('#resourceType')?.addEventListener('change',setResourceTypeFields);
+  qs('#syllabusCourse')?.addEventListener('change',syncSyllabusSourceSelection);
   qs('#uploadSyllabusFile')?.addEventListener('click',uploadSyllabusPdf);
-  qs('#analyzeSyllabusFile')?.addEventListener('click',previewGeminiHandoff);
+  qs('#analyzeSyllabusFile')?.addEventListener('click',analyzeStoredSyllabus);
+  qs('#importAiSyllabus')?.addEventListener('click',importReviewedAiSyllabus);
   qs('#fillExample').addEventListener('click',()=>{qs('#quickAddInput').value='Chem lab report Friday 6pm, probably 2 hours';});
   qs('#parseQuickAdd').addEventListener('click',()=>{const text=qs('#quickAddInput').value.trim();if(!text)return toast('Type something to capture first.');quickParsed=parseNatural(text);showQuickPreview(quickParsed);});
   qs('#confirmQuickAdd').addEventListener('click',confirmQuick);

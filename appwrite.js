@@ -13,7 +13,8 @@
     resourcesTableId: 'resources',
     inboxTableId: 'inbox_items',
     studySessionsTableId: 'study_sessions',
-    academicFilesBucketId: 'academic_files'
+    academicFilesBucketId: 'academic_files',
+    academicAiFunctionId: 'academic-ai'
   });
 
   if (!window.Appwrite) {
@@ -29,6 +30,7 @@
   const account = new Appwrite.Account(client);
   const tablesDB = new Appwrite.TablesDB(client);
   const storage = new Appwrite.Storage(client);
+  const functions = new Appwrite.Functions(client);
 
   const privatePermissions = userId => [
     Appwrite.Permission.read(Appwrite.Role.user(userId)),
@@ -246,6 +248,39 @@
     return storage.deleteFile({ bucketId: CONFIG.academicFilesBucketId, fileId });
   }
 
+
+  async function callAcademicAI(action, payload={}) {
+    const execution = await functions.createExecution({
+      functionId: CONFIG.academicAiFunctionId,
+      body: JSON.stringify({ action, ...payload }),
+      async: false,
+      path: '/',
+      method: 'POST',
+      headers: { 'content-type': 'application/json' }
+    });
+    let parsed = null;
+    try { parsed = execution?.responseBody ? JSON.parse(execution.responseBody) : null; } catch (_) {}
+    if ((execution?.responseStatusCode || 500) >= 400 || parsed?.ok === false) {
+      const message = parsed?.error || execution?.errors || `Academic AI failed with HTTP ${execution?.responseStatusCode || 'unknown'}.`;
+      const err = new Error(message);
+      err.code = execution?.responseStatusCode || 500;
+      throw err;
+    }
+    return parsed || {};
+  }
+
+  async function analyzeSyllabusResource(resourceId) {
+    return callAcademicAI('analyzeSyllabus', { resourceId });
+  }
+
+  async function getPrivateFileUrl(resourceId) {
+    return callAcademicAI('fileUrl', { resourceId });
+  }
+
+  async function checkAcademicAI() {
+    return callAcademicAI('health');
+  }
+
   async function deleteResource(rowId) {
     return tablesDB.deleteRow({ databaseId:CONFIG.databaseId, tableId:CONFIG.resourcesTableId, rowId });
   }
@@ -345,12 +380,13 @@
   }
 
   window.studentHubCloud = Object.freeze({
-    ready:true, config:CONFIG, client, account, tablesDB, storage,
+    ready:true, config:CONFIG, client, account, tablesDB, storage, functions,
     getCurrentUser, signUp, signIn, signOut, listSemesters, ensureSemester,
     listCourses, listAssessments, listTasks, listWorkBlocks, listResources, listInboxItems, listStudySessions,
     createCourse, createAssessment, createTask, createWorkBlock, createResource, createInboxItem, createStudySession,
     updateCourse, updateAssessment, updateTask, updateWorkBlock, updateResource, updateInboxItem, deleteResource,
     uploadAcademicFile, getAcademicFileView, getAcademicFileDownload, deleteAcademicFile,
+    callAcademicAI, analyzeSyllabusResource, getPrivateFileUrl, checkAcademicAI,
     syncAcademicSeed, syncPlannerSeed, syncKnowledgeSeed
   });
 })();

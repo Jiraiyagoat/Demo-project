@@ -265,7 +265,7 @@
       <div><span class="eyebrow">Syllabus intake</span><h2 id="importTitle">Import a syllabus</h2></div>
       <button class="icon-btn close-modal" aria-label="Close">×</button>
     </div>
-    <p class="modal-intro">Upload the original PDF privately to Appwrite now. The Gemini extraction function will use this stored source in the next milestone. You can still test the local text parser below.</p>
+    <p class="modal-intro">Upload the original PDF privately to Appwrite, then let the server-side Academic AI Function extract course data with Gemini. Review every field before importing. The local parser remains below as a fallback.</p>
 
     <div class="syllabus-upload-panel">
       <div class="course-form-grid">
@@ -277,9 +277,13 @@
         <button class="btn secondary" id="uploadSyllabusFile" type="button">Upload syllabus PDF</button>
         <button class="btn primary" id="analyzeSyllabusFile" type="button" disabled>Analyze with Gemini</button>
       </div>
+      <div id="aiSyllabusReview" class="ai-syllabus-review hidden"></div>
+      <div class="button-row ai-import-actions">
+        <button class="btn primary hidden" id="importAiSyllabus" type="button">Import reviewed syllabus</button>
+      </div>
     </div>
 
-    <div class="modal-divider"><span>or test the local parser</span></div>
+    <div class="modal-divider"><span>or use the local parser</span></div>
     <textarea id="syllabusInput" rows="10"></textarea>
     <div id="syllabusPreview" class="syllabus-preview hidden"></div>
     <div class="modal-actions">

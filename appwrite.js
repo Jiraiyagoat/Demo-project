@@ -377,6 +377,9 @@
   async function deleteResource(rowId) {
     return tablesDB.deleteRow({ databaseId:CONFIG.databaseId, tableId:CONFIG.resourcesTableId, rowId });
   }
+  async function deleteWorkBlock(rowId) {
+    return tablesDB.deleteRow({ databaseId:CONFIG.databaseId, tableId:CONFIG.workBlocksTableId, rowId });
+  }
 
   async function updateCourse(rowId, patch) { return tablesDB.updateRow({ databaseId:CONFIG.databaseId, tableId:CONFIG.coursesTableId, rowId, data:patch }); }
   async function updateAssessment(rowId, patch) { return tablesDB.updateRow({ databaseId:CONFIG.databaseId, tableId:CONFIG.assessmentsTableId, rowId, data:patch }); }
@@ -477,7 +480,7 @@
     getCurrentUser, signUp, signIn, signOut, listSemesters, ensureSemester,
     listCourses, listAssessments, listTasks, listWorkBlocks, listResources, listInboxItems, listStudySessions,
     createCourse, createAssessment, createTask, createWorkBlock, createResource, createInboxItem, createStudySession,
-    updateCourse, updateAssessment, updateTask, updateWorkBlock, updateResource, updateInboxItem, deleteResource,
+    updateCourse, updateAssessment, updateTask, updateWorkBlock, updateResource, updateInboxItem, deleteResource, deleteWorkBlock,
     uploadAcademicFile, getAcademicFileView, getAcademicFileDownload, deleteAcademicFile,
     callAcademicAI, analyzeSyllabusResource, getPrivateFileUrl, checkAcademicAI,
     syncAcademicSeed, syncPlannerSeed, syncKnowledgeSeed

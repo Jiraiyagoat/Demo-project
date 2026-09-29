@@ -293,6 +293,20 @@
     </div>
   </section>
 
+
+  <section class="modal hidden wide-modal planner-preview-modal" id="plannerPreviewModal" role="dialog" aria-modal="true" aria-labelledby="plannerPreviewTitle">
+    <div class="modal-header">
+      <div><span class="eyebrow" id="plannerPreviewEyebrow">Smart Plan Preview</span><h2 id="plannerPreviewTitle">Review the proposed study plan</h2></div>
+      <button class="icon-btn close-modal" aria-label="Close">×</button>
+    </div>
+    <p class="modal-intro">Student Hub proposes changes first. Nothing is written to Appwrite until you press Apply.</p>
+    <div id="plannerPreviewContent" class="planner-preview-content"></div>
+    <div class="modal-actions planner-preview-actions">
+      <button class="btn secondary close-modal" type="button">Cancel</button>
+      <button class="btn primary" id="applyPlannerPreview" type="button">Apply plan</button>
+    </div>
+  </section>
+
   <div id="toastStack" class="toast-stack" aria-live="polite"></div>
 
   <template id="emptyTemplate">

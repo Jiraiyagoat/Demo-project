@@ -6,8 +6,8 @@
   const qsa = (s, el=document) => [...el.querySelectorAll(s)];
   const uid = (prefix='id') => `${prefix}_${Math.random().toString(36).slice(2,9)}`;
   const startOfDay = d => { const x = new Date(d); x.setHours(0,0,0,0); return x; };
-  const addDays = (d, n) => new Date(startOfDay(d).getTime() + n*DAY);
-  const isoDate = d => new Date(d).toISOString().slice(0,10);
+  const addDays = (d, n) => { const x=startOfDay(d); x.setDate(x.getDate()+n); return x; };
+  const isoDate = d => { const x=new Date(d); const y=x.getFullYear(); const m=String(x.getMonth()+1).padStart(2,'0'); const day=String(x.getDate()).padStart(2,'0'); return `${y}-${m}-${day}`; };
   const clamp = (n,min,max)=>Math.max(min,Math.min(max,n));
   const esc = str => String(str ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#039;','"':'&quot;'}[c]));
   const fmtDate = (d, opts={weekday:'short', month:'short', day:'numeric'}) => new Intl.DateTimeFormat(undefined, opts).format(new Date(d));
@@ -95,6 +95,22 @@
   let plannerCloudReady = false;
   let knowledgeCloudReady = false;
   let plannerWeekOffset = 0;
+  let plannerMonthOffset = 0;
+  let plannerExpandedGroups = new Set();
+  let plannerPreview = null;
+
+  function ensurePlannerPrefs(){
+    const defaults={view:'week',lens:'plan',courseId:'all',assessmentType:'all',density:'compact',layers:{fixed:true,work:true,deadlines:true}};
+    if(!state.plannerPrefs || typeof state.plannerPrefs!=='object') state.plannerPrefs={...defaults,layers:{...defaults.layers}};
+    state.plannerPrefs.view=['week','month','agenda'].includes(state.plannerPrefs.view)?state.plannerPrefs.view:'week';
+    state.plannerPrefs.lens=['plan','deadlines','courses','impact'].includes(state.plannerPrefs.lens)?state.plannerPrefs.lens:'plan';
+    state.plannerPrefs.courseId=state.plannerPrefs.courseId||'all';
+    state.plannerPrefs.assessmentType=['all','assignment','quiz','project','exam'].includes(state.plannerPrefs.assessmentType)?state.plannerPrefs.assessmentType:'all';
+    state.plannerPrefs.density=['compact','comfortable'].includes(state.plannerPrefs.density)?state.plannerPrefs.density:'compact';
+    state.plannerPrefs.layers={...defaults.layers,...(state.plannerPrefs.layers||{})};
+    return state.plannerPrefs;
+  }
+  ensurePlannerPrefs();
 
   function save(){ localStorage.setItem(activeStorageKey, JSON.stringify(state)); updateBadges(); }
   function course(id){ return state.courses.find(c=>c.id===id); }
@@ -263,63 +279,311 @@
   function timelineRow(e){ const c=course(e.courseId); const label=e.type==='fixed'?'Fixed event':e.type==='work'?'Work block':'Study session'; return `<div class="timeline-item"><span class="timeline-time">${fmtTime(e.start)}</span><span class="timeline-line" style="--item-color:${c?.color||'var(--accent)'}"></span><div class="timeline-copy"><strong>${esc(e.title)}</strong><small>${esc(c?.name||'Personal')} · ${label}</small></div><span class="timeline-status">${Math.round((new Date(e.end)-new Date(e.start))/60000)}m</span></div>`; }
   function reviewRow(r){ const c=course(r.courseId); return `<div class="review-item"><div><strong><span class="course-dot" style="--course-color:${c.color}"></span> ${esc(r.topic)}</strong><small>${esc(c.name)} · ${r.due===isoDate(new Date())?'Due today':'Due '+fmtDate(r.due,{month:'short',day:'numeric'})}</small></div><div class="mastery">${r.mastery}%</div></div>`; }
 
-  function renderPlanner(){
-    const start=plannerWeekStart(); const days=[0,1,2,3,4,5,6].map(n=>addDays(start,n));
-    const req=requiredMinutesForWeek(start), sched=scheduledWorkMinutesForWeek(start);
-    const openTasks=(state.tasks||[]).filter(t=>t.status!=='done').sort((a,b)=>a.position-b.position).slice(0,8);
-    const needsPlan=planningCandidates({limit:6});
-    const atRisk=state.assessments.filter(a=>a.status!=='done'&&['overdue','risk'].includes(planningState(a).key)).sort((a,b)=>new Date(a.due)-new Date(b.due));
-    return `
-      <div class="stat-strip">
-        <div class="stat"><span>Required this week</span><strong>${formatMinutes(req)}</strong></div>
-        <div class="stat"><span>Already scheduled</span><strong>${formatMinutes(sched)}</strong></div>
-        <div class="stat"><span>Unscheduled work</span><strong>${formatMinutes(Math.max(0,req-sched))}</strong></div>
-        <div class="stat"><span>Capacity</span><strong>${formatMinutes(state.semester.availableMinutesPerWeek)}</strong></div>
-      </div>
+  function plannerMonthStart(){
+    const now=new Date();
+    return new Date(now.getFullYear(),now.getMonth()+plannerMonthOffset,1);
+  }
+  function plannerMonthGridStart(){ return weekStart(plannerMonthStart()); }
+  function plannerRange(){
+    const prefs=ensurePlannerPrefs();
+    if(prefs.view==='month'){
+      const start=plannerMonthGridStart();
+      return {start,end:addDays(start,42),weeks:6,anchor:plannerMonthStart()};
+    }
+    const start=plannerWeekStart();
+    return {start,end:addDays(start,7),weeks:1,anchor:start};
+  }
+  function assessmentTypeKey(a){
+    const t=String(a?.type||'').toLowerCase();
+    if(/final|midterm|exam/.test(t)) return 'exam';
+    if(/quiz/.test(t)) return 'quiz';
+    if(/project/.test(t)) return 'project';
+    return 'assignment';
+  }
+  function plannerAssessmentMatches(a){
+    const prefs=ensurePlannerPrefs();
+    if(!a) return false;
+    if(prefs.courseId!=='all' && a.courseId!==prefs.courseId) return false;
+    if(prefs.assessmentType!=='all' && assessmentTypeKey(a)!==prefs.assessmentType) return false;
+    return true;
+  }
+  function plannerEventMatches(e){
+    const prefs=ensurePlannerPrefs();
+    if(!e || e.status==='done') return false;
+    if(prefs.courseId!=='all' && e.courseId!==prefs.courseId) return false;
+    if(e.assessmentId && !plannerAssessmentMatches(assessment(e.assessmentId))) return false;
+    if(e.type==='fixed' && !prefs.layers.fixed) return false;
+    if(['work','study'].includes(e.type) && !prefs.layers.work) return false;
+    if(prefs.lens==='deadlines') return false;
+    return true;
+  }
+  function plannerDeadlineMatches(a){
+    const prefs=ensurePlannerPrefs();
+    return prefs.layers.deadlines && a?.status!=='done' && plannerAssessmentMatches(a);
+  }
+  function rangeMinutes(start,end){
+    const prefs=ensurePlannerPrefs();
+    return state.events.filter(e=>{
+      if(e.status==='done'||!['work','study'].includes(e.type)||new Date(e.start)<start||new Date(e.start)>=end) return false;
+      if(prefs.courseId!=='all'&&e.courseId!==prefs.courseId) return false;
+      if(e.assessmentId&&!plannerAssessmentMatches(assessment(e.assessmentId))) return false;
+      return true;
+    }).reduce((sum,e)=>sum+eventMinutes(e),0);
+  }
+  function rangeDueMinutes(start,end){
+    return state.assessments.filter(a=>plannerDeadlineMatches(a)&&new Date(a.due)>=start&&new Date(a.due)<end).reduce((sum,a)=>sum+Math.max(0,Number(a.remaining??a.effort??0)),0);
+  }
+  function rangeAtRisk(start,end){
+    return state.assessments.filter(a=>plannerDeadlineMatches(a)&&new Date(a.due)>=start&&new Date(a.due)<end&&['overdue','risk'].includes(planningState(a).key));
+  }
+  function topicWeakness(a){
+    const topics=new Set((a?.topics||[]).map(x=>String(x).toLowerCase()));
+    const matches=(state.review||[]).filter(r=>r.courseId===a?.courseId && (!topics.size||topics.has(String(r.topic||'').toLowerCase())));
+    if(!matches.length) return 35;
+    return clamp(Math.round(matches.reduce((s,r)=>s+(100-Number(r.mastery||0)),0)/matches.length),0,100);
+  }
+  function academicPriorityScore(a){
+    if(!a) return 0;
+    const days=Math.max(.5,(new Date(a.due)-new Date())/DAY);
+    const remaining=Math.max(10,Number(a.remaining??a.effort??60));
+    const c=course(a.courseId);
+    const urgency=clamp(14/days,.2,5);
+    const effort=clamp(remaining/120,.4,4);
+    const weight=clamp((Number(a.weight||5))/10,.35,4);
+    const weakness=1+topicWeakness(a)/100;
+    const gradeGap=1+clamp(((Number(c?.target||0)-Number(c?.grade||0))/15),0,1);
+    const raw=urgency*effort*weight*weakness*gradeGap;
+    return clamp(Math.round(16*Math.log2(1+raw)),5,100);
+  }
+  function preferredSessionMinutes(a){
+    const topics=new Set((a?.topics||[]).map(x=>String(x).toLowerCase()));
+    const samples=(state.studySessions||[])
+      .filter(s=>s.courseId===a?.courseId && (s.assessmentId===a?.id || !topics.size || topics.has(String(s.topic||'').toLowerCase())))
+      .map(s=>Number(s.minutes||0)).filter(x=>x>=10&&x<=120).sort((x,y)=>x-y);
+    if(!samples.length) return 45;
+    const mid=Math.floor(samples.length/2);
+    const median=samples.length%2?samples[mid]:(samples[mid-1]+samples[mid])/2;
+    return clamp(Math.round(median/5)*5,25,60);
+  }
+  function plannerPeriodLabel(){
+    const prefs=ensurePlannerPrefs();
+    if(prefs.view==='month') return fmtDate(plannerMonthStart(),{month:'long',year:'numeric'});
+    const start=plannerWeekStart(), end=addDays(start,6);
+    const left=fmtDate(start,{month:'short',day:'numeric'}), right=fmtDate(end,{month:'short',day:'numeric'});
+    return `${left} – ${right}`;
+  }
+  function plannerCourseLoad(courseId,start,end){
+    const scheduled=state.events.filter(e=>e.status!=='done'&&e.courseId===courseId&&['work','study'].includes(e.type)&&new Date(e.start)>=start&&new Date(e.start)<end).reduce((s,e)=>s+eventMinutes(e),0);
+    const deadlines=state.assessments.filter(a=>a.status!=='done'&&a.courseId===courseId&&new Date(a.due)>=start&&new Date(a.due)<end);
+    return {scheduled,deadlines,maxImpact:deadlines.reduce((m,a)=>Math.max(m,academicPriorityScore(a)),0)};
+  }
+  function plannerRepairPreview(){
+    const now=new Date();
+    const capacity=Math.max(60,Number(state.semester.availableMinutesPerWeek||840));
+    const adaptive=e=>e.type==='work'&&e.status!=='done'&&new Date(e.start)>now&&String(e.sourceType||'').startsWith('adaptive_planner');
+    const removals=new Map();
+    const reason=(e,msg)=>{ if(!removals.has(e.id)) removals.set(e.id,{event:e,reason:msg}); };
+    const adaptiveBlocks=state.events.filter(adaptive).sort((a,b)=>new Date(a.start)-new Date(b.start));
 
-      ${(needsPlan.length||atRisk.length)?`
-      <article class="card planner-intelligence">
-        <div class="planner-intelligence-head">
-          <div><span class="eyebrow">Adaptive planner</span><h2>${atRisk.length?`${atRisk.length} deadline${atRisk.length===1?'':'s'} need attention`:`${needsPlan.length} assessment${needsPlan.length===1?'':'s'} can be scheduled`}</h2><p>Student Hub converts remaining effort into realistic work blocks before each deadline instead of simply storing due dates.</p></div>
-          <button class="btn primary" id="smartPlanAll">Smart-plan unscheduled</button>
-        </div>
-        <div class="plan-recommendations">
-          ${(atRisk.length?atRisk:needsPlan).slice(0,4).map(a=>{
-            const ps=planningState(a), cc=course(a.courseId);
-            const coverage=ps.remaining?Math.min(100,Math.round(ps.planned/ps.remaining*100)):100;
-            return `<div class="plan-recommendation">
-              <div class="plan-recommendation-main"><span class="course-dot" style="--course-color:${cc?.color||'var(--accent)'}"></span><div><strong>${esc(a.title)}</strong><small>${esc(cc?.name||'Course')} · ${humanDue(a.due)}</small></div></div>
-              <div class="plan-recommendation-progress"><span style="--plan-progress:${coverage}%"></span></div>
-              <div class="plan-recommendation-meta"><span>${formatMinutes(ps.planned)} placed</span><span>${formatMinutes(ps.unscheduled)} to schedule</span><span class="plan-status ${ps.tone}">${ps.label}</span></div>
-              ${ps.key!=='overdue'&&ps.unscheduled>5?`<button class="btn ghost compact-btn" data-plan="${a.id}">Plan this</button>`:''}
-            </div>`;
-          }).join('')}
-        </div>
-      </article>`:''}
+    for(const e of adaptiveBlocks){
+      const a=assessment(e.assessmentId);
+      if(!a){ reason(e,'Orphaned planner block'); continue; }
+      if(new Date(e.start)<planningWindowStart(a)) reason(e,'Scheduled before its planning window');
+      else if(new Date(e.end)>new Date(a.due)) reason(e,'Scheduled after the deadline');
+    }
 
-      <div class="week-toolbar">
-        <div><span class="eyebrow">Week of ${fmtDate(start,{month:'short',day:'numeric'})}</span><h2 style="margin:4px 0 0;font-size:18px">Cloud planner · drag work blocks between days</h2></div>
-        <div class="planner-week-actions">
-          <div class="week-nav"><button class="btn ghost compact-btn" id="plannerPrevWeek" aria-label="Previous week">←</button><button class="btn secondary compact-btn" id="plannerThisWeek">This week</button><button class="btn ghost compact-btn" id="plannerNextWeek" aria-label="Next week">→</button></div>
-          <button class="btn secondary" id="autoPlan">Smart-plan remaining</button>
-        </div>
-      </div>
-      <div class="week-grid">
-        ${days.map(day=>{
-          const events=state.events.filter(e=>e.status!=='done'&&isoDate(e.start)===isoDate(day)).sort((a,b)=>new Date(a.start)-new Date(b.start));
-          const deadlines=state.assessments.filter(a=>isoDate(a.due)===isoDate(day)&&a.status!=='done');
-          return `<div class="day-column" data-day="${isoDate(day)}"><div class="day-head ${isToday(day)?'today':''}"><strong>${fmtDate(day,{weekday:'short'})}</strong><span>${fmtDate(day,{month:'short',day:'numeric'})}</span></div>${events.map(eventCard).join('')}${deadlines.map(deadlineCard).join('')}</div>`
-        }).join('')}
-      </div>
-      <p style="color:var(--muted);font-size:10px;margin-top:10px">Deadlines are constraints. Adaptive work blocks respect your configured weekly capacity and avoid overlapping existing events.</p>
-      <div class="section-head"><div><h2>Work queue</h2><p>Planning an assessment creates actionable tasks before placing time blocks.</p></div><span class="pill ${plannerCloudReady?'success':''}">${plannerCloudReady?'Cloud tasks synced':'Planner cloud unavailable'}</span></div>
-      <article class="card task-queue">${openTasks.length?openTasks.map(taskRow).join(''):`<div class="empty-state"><div class="empty-icon">✓</div><h3>No open planner tasks</h3><p>Import a syllabus or use Plan work on an assessment to create a task breakdown.</p></div>`}</article>
-    `;
+    const byAssessment=new Map();
+    adaptiveBlocks.filter(e=>!removals.has(e.id)).forEach(e=>{
+      if(!byAssessment.has(e.assessmentId)) byAssessment.set(e.assessmentId,[]);
+      byAssessment.get(e.assessmentId).push(e);
+    });
+    for(const [aid,blocks] of byAssessment){
+      const a=assessment(aid); if(!a) continue;
+      let allowance=Math.max(0,Number(a.remaining??a.effort??0));
+      for(const e of blocks.sort((x,y)=>new Date(x.start)-new Date(y.start))){
+        const mins=eventMinutes(e);
+        if(allowance<=5 || mins>allowance+5) reason(e,'Exceeds the assessment remaining effort');
+        else allowance-=mins;
+      }
+    }
+
+    const surviving=adaptiveBlocks.filter(e=>!removals.has(e.id));
+    const weeks=new Map();
+    for(const e of surviving){
+      const key=isoDate(weekStart(e.start));
+      if(!weeks.has(key)) weeks.set(key,[]);
+      weeks.get(key).push(e);
+    }
+    for(const [key,blocks] of weeks){
+      const start=new Date(`${key}T00:00:00`), end=addDays(start,7);
+      const nonAdaptive=state.events.filter(e=>e.status!=='done'&&!adaptive(e)&&['work','study'].includes(e.type)&&new Date(e.start)>=start&&new Date(e.start)<end).reduce((s,e)=>s+eventMinutes(e),0);
+      let available=Math.max(0,capacity-nonAdaptive);
+      const ordered=[...blocks].sort((x,y)=>{
+        const ax=assessment(x.assessmentId), ay=assessment(y.assessmentId);
+        return planningPriority(ay)-planningPriority(ax) || new Date(x.start)-new Date(y.start);
+      });
+      for(const e of ordered){
+        const mins=eventMinutes(e);
+        if(mins<=available) available-=mins;
+        else reason(e,'Pushes the week above your study-capacity limit');
+      }
+    }
+    return {mode:'repair',remove:[...removals.values()],generatedAt:new Date().toISOString()};
+  }
+  function planHealth(){
+    const repair=plannerRepairPreview();
+    const capacity=Math.max(60,Number(state.semester.availableMinutesPerWeek||840));
+    const currentStart=weekStart(), currentScheduled=scheduledWorkMinutesForWeek(currentStart);
+    return {repairCount:repair.remove.length,currentScheduled,capacity,overBy:Math.max(0,currentScheduled-capacity)};
+  }
+  function renderPlannerStats(start,end,weeks){
+    const due=rangeDueMinutes(start,end), scheduled=rangeMinutes(start,end), capacity=(state.semester.availableMinutesPerWeek||840)*weeks;
+    const free=capacity-scheduled, risk=rangeAtRisk(start,end).length;
+    return `<div class="stat-strip planner-stat-strip">
+      <div class="stat"><span>Due workload</span><strong>${formatMinutes(due)}</strong><small>remaining effort due in this view</small></div>
+      <div class="stat"><span>Planned study</span><strong>${formatMinutes(scheduled)}</strong><small>work blocks in this view</small></div>
+      <div class="stat ${free<0?'stat-danger':''}"><span>${free<0?'Over capacity':'Capacity left'}</span><strong>${formatMinutes(Math.abs(free))}</strong><small>${weeks===1?'this week':`${weeks} visible weeks`}</small></div>
+      <div class="stat ${risk?'stat-warning':''}"><span>At-risk deadlines</span><strong>${risk}</strong><small>due in this view</small></div>
+    </div>`;
+  }
+  function renderPlannerControlBar(){
+    const prefs=ensurePlannerPrefs();
+    const viewButton=(key,label)=>`<button class="planner-segment ${prefs.view===key?'active':''}" data-planner-view="${key}">${label}</button>`;
+    const lensButton=(key,label)=>`<button class="planner-segment ${prefs.lens===key?'active':''}" data-planner-lens="${key}">${label}</button>`;
+    return `<div class="planner-commandbar card">
+      <div class="planner-period-nav"><button class="icon-btn planner-arrow" id="plannerPrevPeriod" aria-label="Previous period">←</button><button class="planner-period-label" id="plannerToday">${esc(plannerPeriodLabel())}<small>Jump to today</small></button><button class="icon-btn planner-arrow" id="plannerNextPeriod" aria-label="Next period">→</button></div>
+      <div class="planner-command-groups"><div class="planner-segments" aria-label="Calendar view">${viewButton('week','Week')}${viewButton('month','Month')}${viewButton('agenda','Agenda')}</div><div class="planner-segments four" aria-label="Planner lens">${lensButton('plan','Plan')}${lensButton('deadlines','Deadlines')}${lensButton('courses','Courses')}${lensButton('impact','Impact')}</div></div>
+      <button class="btn primary" id="autoPlan">Preview smart plan</button>
+    </div>`;
+  }
+  function renderPlannerFilters(start,end){
+    const prefs=ensurePlannerPrefs();
+    const courseButton=(id,label,color='var(--accent)')=>`<button class="planner-filter-btn ${prefs.courseId===id?'active':''}" data-planner-course-filter="${id}"><span class="course-dot" style="--course-color:${color}"></span><span>${esc(label)}</span></button>`;
+    const typeButton=(key,label)=>`<button class="planner-filter-btn mini ${prefs.assessmentType===key?'active':''}" data-planner-type-filter="${key}">${label}</button>`;
+    const layerButton=(key,label)=>`<button class="planner-filter-btn mini ${prefs.layers[key]?'active':''}" data-planner-layer="${key}"><span class="layer-check">${prefs.layers[key]?'✓':''}</span>${label}</button>`;
+    return `<aside class="planner-filter-panel card">
+      <div class="planner-filter-section"><span class="eyebrow">Courses</span>${courseButton('all','All courses','#6d63ed')}${state.courses.map(c=>courseButton(c.id,c.name,c.color)).join('')}</div>
+      <div class="planner-filter-section"><span class="eyebrow">Assessment type</span><div class="planner-mini-grid">${typeButton('all','All')}${typeButton('assignment','Homework')}${typeButton('quiz','Quizzes')}${typeButton('project','Projects')}${typeButton('exam','Exams')}</div></div>
+      <div class="planner-filter-section"><span class="eyebrow">Layers</span><div class="planner-mini-grid">${layerButton('fixed','Classes')}${layerButton('work','Study work')}${layerButton('deadlines','Deadlines')}</div></div>
+      <div class="planner-filter-section"><span class="eyebrow">Density</span><button class="planner-density-toggle" id="plannerDensity"><span>${prefs.density==='compact'?'Compact':'Comfortable'}</span><small>${prefs.density==='compact'?'Less clutter':'More detail'}</small></button></div>
+    </aside>`;
+  }
+  function renderCourseLens(start,end){
+    if(ensurePlannerPrefs().lens!=='courses') return '';
+    return `<div class="planner-course-lens">${state.courses.map(c=>{ const load=plannerCourseLoad(c.id,start,end); return `<button class="course-load-card ${ensurePlannerPrefs().courseId===c.id?'active':''}" data-planner-course-filter="${c.id}" style="--course-color:${c.color}"><span class="course-dot" style="--course-color:${c.color}"></span><div><strong>${esc(c.name)}</strong><small>${formatMinutes(load.scheduled)} planned · ${load.deadlines.length} deadline${load.deadlines.length===1?'':'s'}</small></div><span class="impact-chip">${load.maxImpact?`Impact ${load.maxImpact}`:'Clear'}</span></button>`; }).join('')}</div>`;
+  }
+  function renderDeadlineRunway(){
+    if(ensurePlannerPrefs().lens!=='deadlines') return '';
+    const now=new Date(), horizon=addDays(now,35);
+    const items=state.assessments.filter(a=>plannerDeadlineMatches(a)&&new Date(a.due)>=now&&new Date(a.due)<horizon).sort((a,b)=>new Date(a.due)-new Date(b.due));
+    const buckets=[['Next 3 days',0,3],['This week',3,7],['Next 2 weeks',7,14],['Later',14,35]];
+    return `<div class="deadline-runway">${buckets.map(([label,min,max])=>{ const list=items.filter(a=>{const d=(new Date(a.due)-now)/DAY;return d>=min&&d<max;}); return `<section class="deadline-bucket"><div class="deadline-bucket-head"><strong>${label}</strong><span>${list.length}</span></div>${list.length?list.slice(0,6).map(a=>deadlineRunwayItem(a)).join(''):`<div class="deadline-empty">Nothing here</div>`}</section>`; }).join('')}</div>`;
+  }
+  function deadlineRunwayItem(a){
+    const c=course(a.courseId), ps=planningState(a), impact=academicPriorityScore(a);
+    return `<button class="deadline-runway-item" data-preview-plan="${a.id}" style="--course-color:${c?.color||'var(--accent)'}"><span class="course-dot" style="--course-color:${c?.color||'var(--accent)'}"></span><div><strong>${esc(a.title)}</strong><small>${esc(c?.name||'Course')} · ${humanDue(a.due)} · ${formatMinutes(ps.unscheduled)} unplanned</small></div><span class="impact-chip ${ps.tone}">${impact}</span></button>`;
+  }
+  function renderPlannerWeek(start){
+    const prefs=ensurePlannerPrefs();
+    const days=[0,1,2,3,4,5,6].map(n=>addDays(start,n));
+    return `<div class="week-grid redesigned ${prefs.density}">${days.map(day=>renderPlannerDay(day)).join('')}</div>`;
+  }
+  function renderPlannerDay(day){
+    const events=state.events.filter(e=>plannerEventMatches(e)&&isoDate(e.start)===isoDate(day)).sort((a,b)=>new Date(a.start)-new Date(b.start));
+    const deadlines=state.assessments.filter(a=>plannerDeadlineMatches(a)&&isoDate(a.due)===isoDate(day)).sort((a,b)=>new Date(a.due)-new Date(b.due));
+    const fixed=events.filter(e=>e.type==='fixed');
+    const work=events.filter(e=>['work','study'].includes(e.type));
+    const workGroups=groupWorkForDay(work,day);
+    const workMinutes=work.reduce((s,e)=>s+eventMinutes(e),0), dayLimit=dailyPlanningLimit();
+    return `<div class="day-column redesigned" data-day="${isoDate(day)}"><div class="day-head ${isToday(day)?'today':''}"><div><strong>${fmtDate(day,{weekday:'short'})}</strong><span>${fmtDate(day,{month:'short',day:'numeric'})}</span></div><div class="day-load"><span style="--load:${Math.min(100,Math.round(workMinutes/Math.max(1,dayLimit)*100))}%"></span><small>${workMinutes?formatMinutes(workMinutes):'open'}</small></div></div>
+      ${deadlines.length?`<div class="deadline-stack">${deadlines.map(deadlineFlag).join('')}</div>`:''}
+      <div class="day-event-stack">${fixed.map(compactEventCard).join('')}${workGroups.map(group=>renderWorkGroup(group,day)).join('')}${!fixed.length&&!workGroups.length&&!deadlines.length?'<div class="day-empty">Open capacity</div>':''}</div>
+    </div>`;
+  }
+  function groupWorkForDay(events,day){
+    const map=new Map();
+    for(const e of events){
+      const key=e.assessmentId||e.taskId||e.id;
+      if(!map.has(key)) map.set(key,{key,assessmentId:e.assessmentId||'',events:[]});
+      map.get(key).events.push(e);
+    }
+    return [...map.values()].sort((a,b)=>new Date(a.events[0].start)-new Date(b.events[0].start));
+  }
+  function renderWorkGroup(group,day){
+    const events=group.events.sort((a,b)=>new Date(a.start)-new Date(b.start));
+    const groupKey=`${isoDate(day)}::${group.key}`;
+    const expanded=plannerExpandedGroups.has(groupKey);
+    if(events.length===1 || expanded){
+      return `${events.map(compactEventCard).join('')}${events.length>1?`<button class="group-collapse" data-toggle-work-group="${esc(groupKey)}">Collapse ${events.length} sessions</button>`:''}`;
+    }
+    const a=assessment(group.assessmentId), c=course(events[0].courseId);
+    const mins=events.reduce((s,e)=>s+eventMinutes(e),0);
+    const taskLabels=[...new Set(events.map(e=>String(e.title||'').split(' · ').slice(1).join(' · ')).filter(Boolean))].slice(0,2);
+    return `<button class="work-group-card" data-toggle-work-group="${esc(groupKey)}" style="--event-color:${c?.color||'var(--accent)'}"><div class="event-type">${events.length} sessions · ${formatMinutes(mins)}</div><strong>${esc(a?.title||courseName(events[0].courseId))}</strong><small>${fmtTime(events[0].start)}–${fmtTime(events[events.length-1].end)}${taskLabels.length?` · ${esc(taskLabels.join(' + '))}`:''}</small><span>Expand</span></button>`;
+  }
+  function compactEventCard(e){
+    const c=course(e.courseId), draggable=['work','study'].includes(e.type);
+    return `<div class="event-card compact-event" ${draggable?'draggable="true"':''} data-event-id="${e.id}" style="--event-color:${c?.color||'var(--accent)'}"><div class="event-type">${e.type==='fixed'?'class':e.type}${e.cloudId?' · cloud':''}</div><strong>${esc(e.title)}</strong><small>${fmtTime(e.start)}–${fmtTime(e.end)} · ${eventMinutes(e)}m</small></div>`;
+  }
+  function deadlineFlag(a){
+    const c=course(a.courseId), ps=planningState(a);
+    return `<button class="deadline-flag ${ps.tone}" data-preview-plan="${a.id}" style="--event-color:${c?.color||'var(--danger)'}"><span>${fmtTime(a.due)}</span><strong>${esc(a.title)}</strong><small>${formatMinutes(a.remaining)} left</small></button>`;
+  }
+  function renderPlannerAgenda(start){
+    const days=[0,1,2,3,4,5,6].map(n=>addDays(start,n));
+    return `<div class="planner-agenda">${days.map(day=>{
+      const events=state.events.filter(e=>plannerEventMatches(e)&&isoDate(e.start)===isoDate(day)).sort((a,b)=>new Date(a.start)-new Date(b.start));
+      const deadlines=state.assessments.filter(a=>plannerDeadlineMatches(a)&&isoDate(a.due)===isoDate(day)).sort((a,b)=>new Date(a.due)-new Date(b.due));
+      const work=events.filter(e=>['work','study'].includes(e.type));
+      const fixed=events.filter(e=>e.type==='fixed');
+      const groups=groupWorkForDay(work,day);
+      return `<section class="agenda-day ${isToday(day)?'today':''}"><header><div><span>${fmtDate(day,{weekday:'long'})}</span><strong>${fmtDate(day,{month:'short',day:'numeric'})}</strong></div><small>${formatMinutes(work.reduce((s,e)=>s+eventMinutes(e),0))} planned · ${deadlines.length} deadline${deadlines.length===1?'':'s'}</small></header><div class="agenda-items">${deadlines.map(deadlineAgendaItem).join('')}${fixed.map(agendaEventItem).join('')}${groups.map(g=>agendaGroupItem(g)).join('')}${!events.length&&!deadlines.length?'<div class="agenda-empty">No academic commitments</div>':''}</div></section>`;
+    }).join('')}</div>`;
+  }
+  function deadlineAgendaItem(a){ const c=course(a.courseId), ps=planningState(a); return `<button class="agenda-row deadline" data-preview-plan="${a.id}" style="--row-color:${c?.color||'var(--danger)'}"><span class="agenda-time">Due ${fmtTime(a.due)}</span><div><strong>${esc(a.title)}</strong><small>${esc(c?.name||'Course')} · ${formatMinutes(a.remaining)} remaining</small></div><span class="plan-status ${ps.tone}">${ps.label}</span></button>`; }
+  function agendaEventItem(e){ const c=course(e.courseId); return `<div class="agenda-row" style="--row-color:${c?.color||'var(--accent)'}"><span class="agenda-time">${fmtTime(e.start)}</span><div><strong>${esc(e.title)}</strong><small>${esc(c?.name||'Course')} · ${eventMinutes(e)}m</small></div><span class="pill">Class</span></div>`; }
+  function agendaGroupItem(g){ const events=g.events, a=assessment(g.assessmentId), c=course(events[0]?.courseId), mins=events.reduce((s,e)=>s+eventMinutes(e),0); return `<div class="agenda-row" style="--row-color:${c?.color||'var(--accent)'}"><span class="agenda-time">${fmtTime(events[0].start)}</span><div><strong>${esc(a?.title||events[0].title)}</strong><small>${events.length} session${events.length===1?'':'s'} · ${formatMinutes(mins)} · ${esc(c?.name||'Course')}</small></div><span class="pill">Study</span></div>`; }
+  function renderPlannerMonth(){
+    const month=plannerMonthStart(), start=plannerMonthGridStart();
+    const days=Array.from({length:42},(_,i)=>addDays(start,i));
+    const monthIndex=month.getMonth();
+    return `<div class="month-weekdays">${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(x=>`<span>${x}</span>`).join('')}</div><div class="planner-month-grid">${days.map(day=>{
+      const events=state.events.filter(e=>plannerEventMatches(e)&&isoDate(e.start)===isoDate(day));
+      const work=events.filter(e=>['work','study'].includes(e.type));
+      const deadlines=state.assessments.filter(a=>plannerDeadlineMatches(a)&&isoDate(a.due)===isoDate(day));
+      const mins=work.reduce((s,e)=>s+eventMinutes(e),0), load=Math.min(100,Math.round(mins/Math.max(1,dailyPlanningLimit())*100));
+      return `<button class="month-day ${day.getMonth()!==monthIndex?'outside':''} ${isToday(day)?'today':''}" data-jump-day="${isoDate(day)}"><header><span>${day.getDate()}</span>${mins?`<small>${formatMinutes(mins)}</small>`:''}</header><div class="month-load"><span style="--load:${load}%"></span></div><div class="month-deadlines">${deadlines.slice(0,2).map(a=>`<span style="--dot:${colorForCourse(a.courseId)}">${esc(a.title)}</span>`).join('')}${deadlines.length>2?`<em>+${deadlines.length-2} more</em>`:''}</div>${work.length?`<div class="month-session-count">${work.length} session${work.length===1?'':'s'}</div>`:''}</button>`;
+    }).join('')}</div>`;
+  }
+  function renderImpactView(start,end){
+    const now=new Date();
+    let items=state.assessments.filter(a=>a.status!=='done'&&new Date(a.due)>now&&plannerAssessmentMatches(a));
+    const inRange=items.filter(a=>new Date(a.due)>=start&&new Date(a.due)<end);
+    if(inRange.length) items=inRange;
+    items=items.sort((a,b)=>academicPriorityScore(b)-academicPriorityScore(a)).slice(0,12);
+    return `<div class="impact-board"><div class="impact-note"><strong>Academic Impact</strong><span>This is a planning heuristic, not a grade prediction. It combines urgency, remaining effort, assessment weight, topic weakness, and your course grade gap.</span></div>${items.length?items.map(a=>{const c=course(a.courseId),score=academicPriorityScore(a),weak=topicWeakness(a),ps=planningState(a),coverage=ps.remaining?Math.min(100,Math.round(ps.planned/ps.remaining*100)):100,gradeGap=Math.max(0,Math.round((Number(c?.target||0)-Number(c?.grade||0))*10)/10);return `<article class="impact-card" style="--course-color:${c?.color||'var(--accent)'}"><div class="impact-score"><strong>${score}</strong><span>impact</span></div><div class="impact-main"><span class="eyebrow">${esc(c?.name||'Course')} · ${esc(a.type)}</span><h3>${esc(a.title)}</h3><p>${humanDue(a.due)} · ${formatMinutes(a.remaining)} remaining · ${preferredSessionMinutes(a)}m preferred sessions</p><div class="impact-factors"><span><b>${Number(a.weight||0)}%</b> weight</span><span><b>${weak}%</b> topic gap</span><span><b>${gradeGap}%</b> grade gap</span><span><b>${coverage}%</b> planned</span></div></div><button class="btn secondary compact-btn" data-preview-plan="${a.id}">Preview plan</button></article>`;}).join(''):`<div class="empty-state"><div class="empty-icon">✓</div><h3>No matching upcoming assessments</h3><p>Change the course/type filter or time period.</p></div>`}</div>`;
   }
 
-  function eventCard(e){ const c=course(e.courseId); const draggable=['work','study'].includes(e.type); return `<div class="event-card" ${draggable?'draggable="true"':''} data-event-id="${e.id}" style="--event-color:${c?.color||'var(--accent)'}"><div class="event-type">${e.type}${e.cloudId?' · cloud':''}</div><small>${fmtTime(e.start)}–${fmtTime(e.end)}</small><strong>${esc(e.title)}</strong></div>`; }
+  function renderUnscheduledShelf(){
+    const prefs=ensurePlannerPrefs();
+    if(prefs.lens==='deadlines') return '';
+    const candidates=planningCandidates({courseId:prefs.courseId==='all'?'':prefs.courseId,limit:10}).filter(plannerAssessmentMatches);
+    return `<section class="unscheduled-shelf"><div class="section-head compact"><div><h2>Unscheduled shelf</h2><p>Work stays here until it earns calendar space. Smart Plan previews changes before saving them.</p></div>${candidates.length?`<span class="pill">${candidates.length} need planning</span>`:''}</div><div class="unscheduled-track">${candidates.length?candidates.map(a=>{const c=course(a.courseId),ps=planningState(a),impact=academicPriorityScore(a);return `<article class="unscheduled-card" style="--course-color:${c?.color||'var(--accent)'}"><div class="unscheduled-card-head"><span class="course-dot" style="--course-color:${c?.color||'var(--accent)'}"></span><span class="impact-chip">Impact ${impact}</span></div><strong>${esc(a.title)}</strong><small>${esc(c?.name||'Course')} · ${humanDue(a.due)}</small><div class="unscheduled-meta"><span>${formatMinutes(ps.unscheduled)} unplanned</span><span>${preferredSessionMinutes(a)}m sessions</span></div><button class="btn secondary compact-btn" data-preview-plan="${a.id}">Preview plan</button></article>`;}).join(''):`<div class="unscheduled-clear"><span>✓</span><div><strong>Everything upcoming has calendar coverage</strong><small>New work will appear here when it needs scheduling.</small></div></div>`}</div></section>`;
+  }
+  function renderPlanner(){
+    const prefs=ensurePlannerPrefs(), range=plannerRange(), health=planHealth();
+    const openTasks=(state.tasks||[]).filter(t=>t.status!=='done' && (prefs.courseId==='all'||t.courseId===prefs.courseId)).sort((a,b)=>a.position-b.position);
+    const healthIssue=health.repairCount||health.overBy>0;
+    const mainView=prefs.lens==='impact'?renderImpactView(range.start,range.end):(prefs.view==='month'?renderPlannerMonth():prefs.view==='agenda'?renderPlannerAgenda(range.start):renderPlannerWeek(range.start));
+    return `${renderPlannerControlBar()}${renderPlannerStats(range.start,range.end,range.weeks)}
+      ${healthIssue?`<article class="planner-health warning"><div><span class="eyebrow">Plan health</span><strong>${health.overBy?`${formatMinutes(health.overBy)} over this week's capacity`:''}${health.overBy&&health.repairCount?' · ':''}${health.repairCount?`${health.repairCount} adaptive block${health.repairCount===1?'':'s'} can be repaired`:''}</strong><small>Repair only touches future auto-generated blocks; fixed classes and manual work stay unchanged.</small></div>${health.repairCount?`<button class="btn secondary" id="reviewPlanRepair">Review repair</button>`:`<span class="pill warning">Manual load only</span>`}</article>`:`<article class="planner-health success"><div><span class="eyebrow">Plan health</span><strong>Capacity and planning windows look consistent</strong><small>Future auto-generated blocks are inside their deadline windows and weekly limits.</small></div><span class="health-check">✓</span></article>`}
+      ${renderDeadlineRunway()}${renderCourseLens(range.start,range.end)}
+      <div class="planner-shell ${prefs.density}">${renderPlannerFilters(range.start,range.end)}<main class="planner-calendar-panel"><div class="planner-view-caption"><div><span class="eyebrow">${prefs.lens==='plan'?'Time plan':prefs.lens==='deadlines'?'Deadline runway':prefs.lens==='impact'?'Academic impact':'Course load'}</span><h2>${esc(plannerPeriodLabel())}</h2></div><span class="planner-hint">${prefs.view==='week'?'Drag individual expanded study blocks between days':prefs.view==='month'?'Select a date to zoom into its week':'Compact chronological view'}</span></div>${mainView}</main></div>
+      ${renderUnscheduledShelf()}
+      <details class="card planner-details"><summary><span>Task breakdown</span><small>${openTasks.length} open planner task${openTasks.length===1?'':'s'} · expand when you need execution detail</small></summary><div class="task-queue embedded">${openTasks.length?openTasks.slice(0,20).map(taskRow).join(''):`<div class="empty-state compact"><div class="empty-icon">✓</div><h3>No open planner tasks</h3><p>Use Preview smart plan on an assessment to create a task breakdown.</p></div>`}</div></details>`;
+  }
+
   function taskRow(t){ const c=course(t.courseId); const a=assessment(t.assessmentId); return `<div class="task-row"><div class="task-row-copy"><strong><span class="course-dot" style="--course-color:${c?.color||'var(--accent)'}"></span> ${esc(t.title)}</strong><small>${esc(c?.name||'Course')} · ${esc(a?.title||'Assessment')} · ${formatMinutes(t.remaining)} remaining</small></div><div class="button-row"><span class="pill">${esc(t.status.replace('_',' '))}</span><button class="btn secondary" data-task-done="${t.id}">Mark done</button></div></div>`; }
-  function deadlineCard(a){ const c=course(a.courseId); return `<div class="event-card" style="--event-color:${c?.color||'var(--danger)'}"><div class="event-type">deadline · ${fmtTime(a.due)}</div><strong>${esc(a.title)}</strong><small>${formatMinutes(a.remaining)} remaining</small></div>`; }
 
   function renderCourses(){
     if(activeCourseId){ return renderCourseDetail(activeCourseId); }
@@ -383,19 +647,29 @@
 
   function bindPageEvents(){
     qsa('[data-route-jump]').forEach(b=>b.onclick=()=>setRoute(b.dataset.routeJump));
-    qsa('[data-start-focus]').forEach(b=>b.onclick=()=>{ const a=assessment(b.dataset.startFocus); if(!a)return; state.timer.context={courseId:a.courseId,topic:a.topics?.[0]||a.title}; state.timer.seconds=Math.min(45,a.remaining||25)*60; state.timer.initialSeconds=state.timer.seconds; state.timer.running=false; save(); setRoute('study'); });
-    qsa('[data-plan]').forEach(b=>b.onclick=()=>planAssessment(b.dataset.plan));
+    qsa('[data-start-focus]').forEach(b=>b.onclick=()=>{ const a=assessment(b.dataset.startFocus); if(!a)return; state.timer.context={courseId:a.courseId,assessmentId:a.id,topic:a.topics?.[0]||a.title}; state.timer.seconds=Math.min(45,a.remaining||25)*60; state.timer.initialSeconds=state.timer.seconds; state.timer.running=false; save(); setRoute('study'); });
+    qsa('[data-plan]').forEach(b=>b.onclick=()=>openPlannerPreview({assessmentId:b.dataset.plan}));
+    qsa('[data-preview-plan]').forEach(b=>b.onclick=()=>openPlannerPreview({assessmentId:b.dataset.previewPlan}));
     qsa('[data-course]').forEach(b=>b.onclick=()=>{activeCourseId=b.dataset.course; activeCourseTab='overview'; render();});
     qs('#backCourses')?.addEventListener('click',()=>{activeCourseId=null;render();});
     qsa('[data-course-tab]').forEach(b=>b.onclick=()=>{activeCourseTab=b.dataset.courseTab;render();});
     qs('#openImport')?.addEventListener('click',openImport);
     qs('#openAddCourse')?.addEventListener('click',openCourseModal);
-    qs('#autoPlan')?.addEventListener('click',()=>autoPlan());
-    qs('#smartPlanAll')?.addEventListener('click',()=>autoPlan());
-    qs('#smartPlanToday')?.addEventListener('click',async()=>{await autoPlan(); if(state.route!=='planner')setRoute('planner');});
-    qs('#plannerPrevWeek')?.addEventListener('click',()=>{plannerWeekOffset--;render();});
-    qs('#plannerNextWeek')?.addEventListener('click',()=>{plannerWeekOffset++;render();});
-    qs('#plannerThisWeek')?.addEventListener('click',()=>{plannerWeekOffset=0;render();});
+    qs('#autoPlan')?.addEventListener('click',()=>openPlannerPreview({all:true}));
+    qs('#smartPlanAll')?.addEventListener('click',()=>openPlannerPreview({all:true}));
+    qs('#smartPlanToday')?.addEventListener('click',()=>openPlannerPreview({all:true}));
+    qs('#reviewPlanRepair')?.addEventListener('click',openPlannerRepairPreview);
+    qs('#plannerPrevPeriod')?.addEventListener('click',()=>{ const p=ensurePlannerPrefs(); if(p.view==='month')plannerMonthOffset--; else plannerWeekOffset--; render(); });
+    qs('#plannerNextPeriod')?.addEventListener('click',()=>{ const p=ensurePlannerPrefs(); if(p.view==='month')plannerMonthOffset++; else plannerWeekOffset++; render(); });
+    qs('#plannerToday')?.addEventListener('click',()=>{plannerWeekOffset=0;plannerMonthOffset=0;render();});
+    qsa('[data-planner-view]').forEach(b=>b.onclick=()=>{const p=ensurePlannerPrefs();p.view=b.dataset.plannerView;save();render();});
+    qsa('[data-planner-lens]').forEach(b=>b.onclick=()=>{const p=ensurePlannerPrefs();p.lens=b.dataset.plannerLens;save();render();});
+    qsa('[data-planner-course-filter]').forEach(b=>b.onclick=()=>{const p=ensurePlannerPrefs();p.courseId=b.dataset.plannerCourseFilter;save();render();});
+    qsa('[data-planner-type-filter]').forEach(b=>b.onclick=()=>{const p=ensurePlannerPrefs();p.assessmentType=b.dataset.plannerTypeFilter;save();render();});
+    qsa('[data-planner-layer]').forEach(b=>b.onclick=()=>{const p=ensurePlannerPrefs();const key=b.dataset.plannerLayer;p.layers[key]=!p.layers[key];save();render();});
+    qs('#plannerDensity')?.addEventListener('click',()=>{const p=ensurePlannerPrefs();p.density=p.density==='compact'?'comfortable':'compact';save();render();});
+    qsa('[data-toggle-work-group]').forEach(b=>b.onclick=()=>{const key=b.dataset.toggleWorkGroup; if(plannerExpandedGroups.has(key))plannerExpandedGroups.delete(key);else plannerExpandedGroups.add(key);render();});
+    qsa('[data-jump-day]').forEach(b=>b.onclick=()=>{const target=new Date(`${b.dataset.jumpDay}T12:00:00`); const diff=Math.round((weekStart(target)-weekStart())/(7*DAY)); plannerWeekOffset=diff; ensurePlannerPrefs().view='week'; save();render();});
     qsa('[data-task-done]').forEach(b=>b.onclick=()=>markTaskDone(b.dataset.taskDone));
     bindDragDrop();
     qs('#timerToggle')?.addEventListener('click',toggleTimer);
@@ -443,6 +717,91 @@
     }
     state.tasks.push(...created); save();
     return created;
+  }
+
+  function buildPlannerPreview({assessmentId='',courseId=''}={}){
+    const prefs=ensurePlannerPrefs();
+    let candidates=assessmentId?[assessment(assessmentId)].filter(Boolean):planningCandidates({courseId:courseId||(prefs.courseId==='all'?'':prefs.courseId),limit:50});
+    candidates=candidates.filter(a=>a.status!=='done'&&new Date(a.due)>new Date()&&plannerAssessmentMatches(a)).sort((a,b)=>planningPriority(b)-planningPriority(a));
+    const blocks=[], warnings=[];
+    for(const a of candidates){
+      const existing=(state.tasks||[]).filter(t=>t.assessmentId===a.id&&t.status!=='done').sort((x,y)=>x.position-y.position);
+      const taskDrafts=existing.length?existing:buildTaskDrafts(a);
+      for(const task of taskDrafts){
+        let left=Math.max(0,Number(task.remaining??task.estimate??0)- (existing.length?plannedMinutesForTask(task.id):0));
+        while(left>5 && blocks.length<120){
+          const requested=Math.min(preferredSessionMinutes(a),left);
+          const slot=findPlanningSlot(a,requested,blocks);
+          if(!slot){ warnings.push({assessmentId:a.id,title:a.title,minutes:left,reason:'No remaining slot fits before the deadline without crossing capacity.'}); break; }
+          blocks.push({id:uid('preview'),type:'work',status:'preview',courseId:a.courseId,assessmentId:a.id,taskId:existing.length?task.id:'',taskPosition:Number(task.position||0),taskTitle:task.title,title:`${a.title} · ${task.title}`,start:slot.start.toISOString(),end:slot.end.toISOString(),sourceType:'adaptive_planner_v09'});
+          left-=slot.duration;
+        }
+      }
+    }
+    return {mode:'plan',blocks,warnings,candidates,generatedAt:new Date().toISOString()};
+  }
+  function plannerPreviewSummary(preview){
+    const mins=(preview.blocks||[]).reduce((s,e)=>s+eventMinutes(e),0);
+    const unscheduled=(preview.warnings||[]).reduce((s,w)=>s+Number(w.minutes||0),0);
+    const weeks=new Set((preview.blocks||[]).map(e=>isoDate(weekStart(e.start))));
+    return {mins,unscheduled,weeks:weeks.size};
+  }
+  function openPlannerPreview(options={}){
+    if(!plannerCloudReady||!cloudUser||!cloudSemester){toast('Planner cloud is not ready. Check tasks and work_blocks in Appwrite.');return;}
+    plannerPreview=buildPlannerPreview(options);
+    renderPlannerPreviewModal();
+    openModal(qs('#plannerPreviewModal'));
+  }
+  function openPlannerRepairPreview(){
+    if(!plannerCloudReady){toast('Planner cloud is not ready.');return;}
+    plannerPreview=plannerRepairPreview();
+    renderPlannerPreviewModal();
+    openModal(qs('#plannerPreviewModal'));
+  }
+  function renderPlannerPreviewModal(){
+    const host=qs('#plannerPreviewContent'), title=qs('#plannerPreviewTitle'), eyebrow=qs('#plannerPreviewEyebrow'), apply=qs('#applyPlannerPreview');
+    if(!host||!plannerPreview)return;
+    if(plannerPreview.mode==='repair'){
+      eyebrow.textContent='Plan repair preview'; title.textContent='Clean up the overloaded plan'; apply.textContent='Apply repair';
+      const items=plannerPreview.remove||[];
+      host.innerHTML=`<div class="preview-summary-grid"><div><span>Blocks to remove</span><strong>${items.length}</strong></div><div><span>Manual events touched</span><strong>0</strong></div><div><span>Past sessions touched</span><strong>0</strong></div></div><div class="preview-explainer"><strong>Safe repair</strong><p>Only future blocks created by Student Hub's adaptive planner are eligible. Fixed classes, manual blocks, completed sessions, and deadlines remain untouched.</p></div><div class="preview-list">${items.length?items.map(item=>{const e=item.event,c=course(e.courseId);return `<div class="preview-row" style="--row-color:${c?.color||'var(--accent)'}"><span>${fmtDate(e.start,{weekday:'short',month:'short',day:'numeric'})}<small>${fmtTime(e.start)}–${fmtTime(e.end)}</small></span><div><strong>${esc(e.title)}</strong><small>${esc(item.reason)}</small></div><span class="preview-remove">Remove</span></div>`;}).join(''):`<div class="empty-state compact"><div class="empty-icon">✓</div><h3>No repair needed</h3><p>The adaptive blocks already fit their planning windows and capacity.</p></div>`}</div>`;
+      apply.disabled=!items.length;
+    }else{
+      eyebrow.textContent='Smart Plan Preview'; title.textContent='Review the proposed study plan'; apply.textContent='Apply plan';
+      const s=plannerPreviewSummary(plannerPreview), blocks=plannerPreview.blocks||[];
+      const grouped=new Map(); blocks.forEach(e=>{const k=isoDate(e.start);if(!grouped.has(k))grouped.set(k,[]);grouped.get(k).push(e);});
+      host.innerHTML=`<div class="preview-summary-grid"><div><span>New sessions</span><strong>${blocks.length}</strong></div><div><span>Study time placed</span><strong>${formatMinutes(s.mins)}</strong></div><div><span>Weeks used</span><strong>${s.weeks||0}</strong></div><div class="${s.unscheduled?'warning':''}"><span>Could not place</span><strong>${formatMinutes(s.unscheduled)}</strong></div></div><div class="preview-explainer"><strong>Nothing has been saved yet.</strong><p>Sessions are fitted after fixed commitments, inside each assessment's planning window, and under your weekly capacity. Session length also learns from your recorded focus history when available.</p></div>${plannerPreview.warnings?.length?`<div class="preview-warning">${plannerPreview.warnings.length} item${plannerPreview.warnings.length===1?'':'s'} could not fully fit. The remaining work stays on the Unscheduled shelf.</div>`:''}<div class="preview-days">${[...grouped.entries()].sort((a,b)=>a[0].localeCompare(b[0])).map(([date,items])=>`<section><header><strong>${fmtDate(`${date}T12:00:00`,{weekday:'long',month:'short',day:'numeric'})}</strong><span>${formatMinutes(items.reduce((sum,e)=>sum+eventMinutes(e),0))}</span></header>${items.map(e=>{const a=assessment(e.assessmentId),c=course(e.courseId);return `<div class="preview-row" style="--row-color:${c?.color||'var(--accent)'}"><span>${fmtTime(e.start)}<small>${eventMinutes(e)}m</small></span><div><strong>${esc(e.title)}</strong><small>${esc(c?.name||'Course')} · due ${fmtDate(a?.due,{month:'short',day:'numeric'})} · Impact ${academicPriorityScore(a)}</small></div><span class="preview-add">+ Add</span></div>`;}).join('')}</section>`).join('')||'<div class="empty-state compact"><div class="empty-icon">✓</div><h3>No new sessions needed</h3><p>Visible upcoming work is already covered, or no safe slots remain before its deadlines.</p></div>'}</div>`;
+      apply.disabled=!blocks.length;
+    }
+  }
+  async function applyPlannerPreview(){
+    if(!plannerPreview)return;
+    const button=qs('#applyPlannerPreview'); if(button){button.disabled=true;button.textContent=plannerPreview.mode==='repair'?'Repairing…':'Saving…';}
+    try{
+      if(plannerPreview.mode==='repair'){
+        let removed=0;
+        for(const item of plannerPreview.remove||[]){
+          const e=item.event;
+          if(e.cloudId&&window.studentHubCloud.deleteWorkBlock) await window.studentHubCloud.deleteWorkBlock(e.cloudId);
+          state.events=state.events.filter(x=>x.id!==e.id); removed++;
+        }
+        save(); closeModals(); render(); updateCloudStatusCard(); toast(`Plan repaired: ${removed} future adaptive block${removed===1?'':'s'} removed. Preview Smart Plan to rebuild them safely.`);
+        plannerPreview=null; return;
+      }
+      const blocks=plannerPreview.blocks||[];
+      const taskCache=new Map(); let made=0;
+      for(const block of blocks){
+        if(!taskCache.has(block.assessmentId)) taskCache.set(block.assessmentId,await ensureTasksForAssessment(assessment(block.assessmentId)));
+        const tasks=taskCache.get(block.assessmentId)||[];
+        const task=block.taskId?tasks.find(t=>t.id===block.taskId):tasks.find(t=>Number(t.position||0)===Number(block.taskPosition||0))||tasks.find(t=>t.title===block.taskTitle)||tasks[0];
+        if(!task) continue;
+        const draft={id:uid('wb'),courseId:block.courseId,assessmentId:block.assessmentId,taskId:task.id,title:block.title,type:'work',start:block.start,end:block.end,status:'planned',sourceType:'adaptive_planner_v09'};
+        const row=await window.studentHubCloud.createWorkBlock(cloudUser,cloudSemester,draft,draft.id);
+        state.events.push(rowToWorkBlock(row)); made++;
+      }
+      save(); closeModals(); render(); updateCloudStatusCard(); toast(`Smart Plan applied: ${made} study session${made===1?'':'s'} added.`); plannerPreview=null;
+    }catch(error){console.error('Planner preview apply failed:',error);toast('Could not finish applying the planner changes. Some earlier sessions may already be saved; refresh Planner and review Plan Health.');renderPlannerPreviewModal();}
+    finally{if(button&&!plannerPreview){button.disabled=false;}}
   }
 
   function overlapsExisting(start,end,extraEvents=[]){
@@ -565,18 +924,8 @@
   }
 
   async function autoPlan(options={}){
-    if(!plannerCloudReady){toast('Planner cloud is not ready.');return 0;}
-    const buttons=[qs('#autoPlan'),qs('#smartPlanAll'),qs('#smartPlanToday')].filter(Boolean);
-    buttons.forEach(button=>{button.disabled=true;button.dataset.oldText=button.textContent;button.textContent='Planning…';});
-
-    const courseId=options?.courseId||'';
-    const candidates=planningCandidates({courseId,limit:50});
-    let made=0;
-    for(const a of candidates) made+=await planAssessment(a.id,{silent:true});
-
-    render();
-    toast(made?`Adaptive planner created ${made} work block${made!==1?'s':''}.`:(candidates.length?'No additional work blocks fit within current deadlines and capacity.':'Everything upcoming is already planned.'));
-    return made;
+    openPlannerPreview({courseId:options?.courseId||'',all:true});
+    return 0;
   }
 
   async function markTaskDone(id){
@@ -633,7 +982,7 @@
   }
 
   async function recordStudySession(minutes){
-    const draft={id:uid('s'),courseId:state.timer.context.courseId,assessmentId:'',topic:state.timer.context.topic,completedAt:new Date().toISOString(),minutes,sourceType:'focus'};
+    const draft={id:uid('s'),courseId:state.timer.context.courseId,assessmentId:state.timer.context.assessmentId||'',topic:state.timer.context.topic,completedAt:new Date().toISOString(),minutes,sourceType:'focus'};
     try{
       if(knowledgeCloudReady&&cloudUser&&cloudSemester){ const row=await window.studentHubCloud.createStudySession(cloudUser,cloudSemester,draft,draft.id); state.studySessions.unshift(rowToStudySession(row)); }
       else state.studySessions.unshift(draft);
@@ -979,10 +1328,9 @@
         review.classList.remove('hidden');
       }
       qs('#importAiSyllabus')?.classList.add('hidden');
-      qs('#planImportedCourse')?.addEventListener('click',async()=>{
-        const planButton=qs('#planImportedCourse'); if(planButton){planButton.disabled=true;planButton.textContent='Planning…';}
-        await autoPlan({courseId:target.id});
-        closeModals(); plannerWeekOffset=0; state.route='planner'; save(); render();
+      qs('#planImportedCourse')?.addEventListener('click',()=>{
+        closeModals(); plannerWeekOffset=0; plannerMonthOffset=0; state.route='planner'; save(); render();
+        setTimeout(()=>openPlannerPreview({courseId:target.id,all:true}),40);
       });
       qs('#viewImportedCourse')?.addEventListener('click',()=>{activeCourseId=target.id;activeCourseTab='overview';closeModals();state.route='courses';save();render();});
       toast(`AI import complete: ${imported} added${skipped?`, ${skipped} skipped`:''}.`);
@@ -1259,6 +1607,7 @@
       if (!Array.isArray(state.inbox)) state.inbox = [];
       if (!Array.isArray(state.studySessions)) state.studySessions = [];
       if (!state.timer.initialSeconds) state.timer.initialSeconds = state.timer.seconds || 25*60;
+      ensurePlannerPrefs();
     }
     if (semesterName) state.semester.name = semesterName;
     save();
@@ -1274,6 +1623,7 @@
     knowledgeCloudReady = false;
     activeStorageKey = BASE_STORAGE_KEY;
     state = loadState(activeStorageKey);
+    ensurePlannerPrefs();
   }
 
   window.studentHubApp = Object.freeze({
@@ -1298,6 +1648,7 @@
   qs('#uploadSyllabusFile')?.addEventListener('click',uploadSyllabusPdf);
   qs('#analyzeSyllabusFile')?.addEventListener('click',analyzeStoredSyllabus);
   qs('#importAiSyllabus')?.addEventListener('click',importReviewedAiSyllabus);
+  qs('#applyPlannerPreview')?.addEventListener('click',applyPlannerPreview);
   qs('#fillExample').addEventListener('click',()=>{qs('#quickAddInput').value='Chem lab report Friday 6pm, probably 2 hours';});
   qs('#parseQuickAdd').addEventListener('click',()=>{const text=qs('#quickAddInput').value.trim();if(!text)return toast('Type something to capture first.');quickParsed=parseNatural(text);showQuickPreview(quickParsed);});
   qs('#confirmQuickAdd').addEventListener('click',confirmQuick);

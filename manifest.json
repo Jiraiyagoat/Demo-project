@@ -1,10 +1,10 @@
 {
-  "name": "Student Hub Demo",
+  "name": "Student Hub",
   "short_name": "Student Hub",
   "start_url": "./",
+  "scope": "./",
   "display": "standalone",
-  "background_color": "#090b10",
-  "theme_color": "#0d1117",
-  "description": "A connected academic operating system prototype.",
-  "icons": []
+  "background_color": "#f6f7fb",
+  "theme_color": "#6d63ed",
+  "description": "Academic OS for planning, courses, study, and resources."
 }

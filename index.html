@@ -307,6 +307,19 @@
     </div>
   </section>
 
+  <section class="modal hidden study-reflection-modal" id="studyReflectionModal" role="dialog" aria-modal="true" aria-labelledby="studyReflectionTitle">
+    <div class="modal-header">
+      <div><span class="eyebrow">Session check-in</span><h2 id="studyReflectionTitle">What changed?</h2></div>
+      <button class="icon-btn close-modal" aria-label="Close">×</button>
+    </div>
+    <p class="modal-intro">Your timer records time. This quick check-in keeps the planner aligned with the work that is actually left.</p>
+    <div id="studyReflectionContent" class="study-reflection-content"></div>
+    <div class="modal-actions">
+      <button class="btn secondary close-modal" type="button">Not now</button>
+      <button class="btn primary" id="saveStudyReflection" type="button">Save progress</button>
+    </div>
+  </section>
+
 
   <section class="modal hidden onboarding-modal" id="onboardingModal" role="dialog" aria-modal="true" aria-labelledby="onboardingTitle">
     <div class="onboarding-shell">

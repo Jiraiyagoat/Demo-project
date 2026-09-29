@@ -115,6 +115,7 @@
   let plannerMonthOffset = 0;
   let plannerExpandedGroups = new Set();
   let plannerPreview = null;
+  let pendingStudyReflection = null;
   let libraryCourseFilter = 'all';
   let libraryTopicFilter = '';
   let resourceContextCourseId = '';
@@ -845,12 +846,12 @@
       <div class="timer" id="timerDisplay">${formatTimer(t.seconds)}</div>
       <div class="focus-session-meta"><span>${duration} min target</span>${contextAssessment?`<span>${formatMinutes(contextAssessment.remaining)} deadline work left</span>`:'<span>No task tracking attached</span>'}</div>
       <div class="button-row focus-actions"><button class="btn primary" id="timerToggle">${t.running?'Pause':'Start'}</button><button class="btn secondary" id="timerReset">Reset</button><button class="btn secondary" id="finishSession">Finish & save</button></div>
-      <p class="quiet-note">${focusMode?'Distraction-free mode is active. Press Esc or use Exit full screen when you are done.':'Actual study time is recorded when you finish and can improve future session sizing.'}</p>
+      <p class="quiet-note">${focusMode?'Distraction-free mode is active. Press Esc or use Exit full screen when you are done.':contextAssessment?'Finish & save records the session, then asks what work is still left so Planner can adapt.':'Actual study time is recorded when you finish and can improve future session sizing.'}</p>
     </article>
     <article class="card session-materials"><div class="section-head compact"><div><span class="eyebrow">For this session</span><h2>Materials</h2></div><button class="btn ghost compact-btn" data-open-library-course="${contextCourse?.id||''}">Open Library</button></div>${matchingResources.length?`<div class="session-material-list">${matchingResources.map(r=>`<button class="session-material" data-open-library-resource="${r.id}"><span>${r.type==='PDF'?'▤':r.type==='Link'?'↗':'✎'}</span><div><strong>${esc(r.title)}</strong><small>${esc(r.topic||'General')} · ${esc(r.type)}</small></div></button>`).join('')}</div>`:`<div class="empty-state compact"><p>${targetValue==='free'?'Choose a course context or keep the session timer-only.':'No material is linked to this topic yet.'}</p><button class="btn secondary compact-btn" data-add-resource-course="${contextCourse?.id||''}">+ Add material</button></div>`}</article></div>
     <div class="section-head"><div><h2>Due for review</h2><p>Review prompts stay secondary to the session you chose to do now.</p></div></div><div class="review-queue">${state.review.length?state.review.map(reviewRow).join(''):`<div class="card empty-state compact"><p>No review items are due.</p></div>`}</div><div class="section-head"><div><h2>Study history</h2><p>${formatMinutes(totalMinutes)} recorded across ${(state.studySessions||[]).length} session${(state.studySessions||[]).length===1?'':'s'}.</p></div><span class="pill ${knowledgeCloudReady?'success':''}">${knowledgeCloudReady?'Synced':'Local'}</span></div><article class="card session-history">${recent.length?recent.map(studySessionRow).join(''):`<div class="empty-state"><div class="empty-icon">◎</div><h3>No completed focus sessions yet</h3><p>Finish a timer and the session will appear here.</p></div>`}</article>`;
   }
-  function studySessionRow(session){ const c=course(session.courseId); return `<div class="session-row"><div><strong><span class="course-dot" style="--course-color:${c?.color||'var(--accent)'}"></span> ${esc(session.topic||'Study')}</strong><small>${esc(c?.name||'Course')} · ${fmtDate(session.completedAt,{month:'short',day:'numeric'})} ${fmtTime(session.completedAt)}</small></div><span class="pill">${formatMinutes(session.minutes)}</span></div>`; }
+  function studySessionRow(session){ const c=course(session.courseId), a=assessment(session.assessmentId); const label=a?.title||session.topic||'Study'; const context=a&&session.topic&&topicKey(session.topic)!==topicKey(a.title)?`${c?.name||'Course'} · ${session.topic}`:(c?.name||'Course'); return `<div class="session-row"><div><strong><span class="course-dot" style="--course-color:${c?.color||'var(--accent)'}"></span> ${esc(label)}</strong><small>${esc(context)} · ${fmtDate(session.completedAt,{month:'short',day:'numeric'})} ${fmtTime(session.completedAt)}</small></div><span class="pill">${formatMinutes(session.minutes)}</span></div>`; }
 
   function renderLibrary(){
     const filtered=state.resources.filter(r=>(libraryCourseFilter==='all'||r.courseId===libraryCourseFilter)&&(!libraryTopicFilter||topicKey(r.topic)===topicKey(libraryTopicFilter)));
@@ -1251,24 +1252,213 @@
     });
   }
 
+  function studyProgressSnapshot(minutes){
+    const ctx=state.timer?.context||{};
+    const task=(state.tasks||[]).find(t=>t.id===ctx.taskId&&t.status!=='done')||null;
+    const a=assessment(ctx.assessmentId||task?.assessmentId)||null;
+    const c=course(ctx.courseId||task?.courseId||a?.courseId)||null;
+    const remaining=Math.max(0,Number(task?.remaining??a?.remaining??0));
+    return {
+      minutes:Math.max(1,Math.round(Number(minutes)||1)),
+      taskId:task?.id||'',
+      assessmentId:a?.id||'',
+      courseId:c?.id||ctx.courseId||'',
+      topic:ctx.topic||a?.topics?.[0]||task?.title||'Focused study',
+      targetTitle:task?(a?`${a.title} · ${task.title}`:task.title):(a?.title||ctx.topic||'Focused study'),
+      remainingBefore:remaining,
+      outcome:'progress',
+      creditedMinutes:Math.min(Math.max(1,Math.round(Number(minutes)||1)),remaining||Math.max(1,Math.round(Number(minutes)||1))),
+      extraMinutes:30
+    };
+  }
+
+  function beginStudyCompletion(minutes){
+    const snapshot=studyProgressSnapshot(minutes);
+    if(!snapshot.taskId&&!snapshot.assessmentId){
+      recordStudySession(snapshot.minutes);
+      return;
+    }
+    pendingStudyReflection=snapshot;
+    renderStudyReflectionModal();
+    openModal(qs('#studyReflectionModal'));
+  }
+
+  function renderStudyReflectionModal(){
+    const p=pendingStudyReflection, host=qs('#studyReflectionContent');
+    if(!p||!host)return;
+    const task=(state.tasks||[]).find(t=>t.id===p.taskId)||null;
+    const a=assessment(p.assessmentId)||null;
+    const c=course(p.courseId||task?.courseId||a?.courseId)||null;
+    const remaining=Math.max(0,Number(task?.remaining??a?.remaining??p.remainingBefore??0));
+    p.remainingBefore=remaining;
+    p.creditedMinutes=clamp(Math.round(Number(p.creditedMinutes)||0),0,Math.max(remaining,720));
+    p.extraMinutes=clamp(Math.round(Number(p.extraMinutes)||0),0,720);
+    const projected=p.outcome==='done'?0:Math.max(0,remaining-p.creditedMinutes)+(p.outcome==='more'?p.extraMinutes:0);
+    const targetKind=task?'planner task':a?'deadline':'focus target';
+    host.innerHTML=`<div class="study-reflection-summary"><div><span>Session</span><strong>${formatMinutes(p.minutes)}</strong></div><div><span>Target</span><strong>${esc(p.targetTitle)}</strong><small>${esc(c?.name||'Study')} · ${targetKind}</small></div><div><span>Before</span><strong>${formatMinutes(remaining)}</strong><small>estimated work left</small></div><div><span>After</span><strong>${formatMinutes(projected)}</strong><small>if you save this check-in</small></div></div>
+      <div class="reflection-question"><strong>How should this session change the plan?</strong><p>Choose the closest result. You can adjust the minutes before saving.</p></div>
+      <div class="reflection-outcomes">
+        <button type="button" class="reflection-choice ${p.outcome==='done'?'active':''}" data-study-outcome="done"><span class="reflection-icon">✓</span><div><strong>Finished</strong><small>Mark this ${task?'task':'deadline'} complete and retire its future study blocks.</small></div></button>
+        <button type="button" class="reflection-choice ${p.outcome==='progress'?'active':''}" data-study-outcome="progress"><span class="reflection-icon">→</span><div><strong>Made progress</strong><small>Reduce the work left by the time that actually moved the task forward.</small></div></button>
+        <button type="button" class="reflection-choice ${p.outcome==='more'?'active':''}" data-study-outcome="more"><span class="reflection-icon">+</span><div><strong>Needs more time</strong><small>Count this session, then increase the remaining estimate because the work is harder than expected.</small></div></button>
+      </div>
+      ${p.outcome==='done'?`<div class="reflection-note success"><strong>Planner effect</strong><span>Future auto-generated study blocks for this target will be removed. Other courses and manual calendar items stay unchanged.</span></div>`:`<div class="reflection-adjust-grid"><label><span>Count as progress</span><div class="reflection-input"><input id="reflectionCredit" type="number" min="0" max="720" step="5" value="${p.creditedMinutes}"/><em>min</em></div><small>Defaulted to your ${p.minutes}-minute session.</small></label>${p.outcome==='more'?`<label><span>Add to estimate</span><div class="reflection-input"><input id="reflectionExtra" type="number" min="0" max="720" step="5" value="${p.extraMinutes}"/><em>min</em></div><small>Add only the extra time you now think is still needed.</small></label>`:''}</div>`}
+      ${a&&!task?`<div class="reflection-note"><strong>Deadline-level focus</strong><span>If this deadline already has planner tasks, progress is applied across the open tasks in order so the task breakdown and calendar stay consistent.</span></div>`:''}`;
+    host.querySelectorAll('[data-study-outcome]').forEach(b=>b.onclick=()=>{p.outcome=b.dataset.studyOutcome;renderStudyReflectionModal();});
+    host.querySelector('#reflectionCredit')?.addEventListener('change',e=>{p.creditedMinutes=clamp(Math.round(Number(e.target.value)||0),0,720);renderStudyReflectionModal();});
+    host.querySelector('#reflectionExtra')?.addEventListener('change',e=>{p.extraMinutes=clamp(Math.round(Number(e.target.value)||0),0,720);renderStudyReflectionModal();});
+  }
+
+  async function retireWorkBlocks(blocks){
+    const list=(blocks||[]).filter(Boolean);
+    if(!list.length)return 0;
+    const retired=new Set();
+    for(const block of list){
+      if(plannerCloudReady&&block.cloudId) await window.studentHubCloud.updateWorkBlock(block.cloudId,{status:'done'});
+      retired.add(block.id);
+    }
+    state.events=state.events.filter(e=>!retired.has(e.id));
+    return retired.size;
+  }
+
+  async function reconcileAdaptiveBlocksForTask(task,newRemaining){
+    if(!task)return {retired:0,trimmed:0};
+    const now=new Date();
+    const activeFuture=state.events.filter(e=>e.type==='work'&&e.status!=='done'&&e.taskId===task.id&&new Date(e.end)>now);
+    const manualMinutes=activeFuture.filter(e=>!String(e.sourceType||'').startsWith('adaptive_planner')).reduce((sum,e)=>sum+eventMinutes(e),0);
+    const adaptive=activeFuture.filter(e=>String(e.sourceType||'').startsWith('adaptive_planner')).sort((a,b)=>new Date(b.start)-new Date(a.start));
+    let excess=Math.max(0,adaptive.reduce((sum,e)=>sum+eventMinutes(e),0)-Math.max(0,Number(newRemaining||0)-manualMinutes));
+    if(excess<5)return {retired:0,trimmed:0};
+    let retired=0, trimmed=0;
+    const retire=[];
+    for(const block of adaptive){
+      if(excess<5)break;
+      const mins=eventMinutes(block);
+      if(excess>=mins-4){ retire.push(block); excess=Math.max(0,excess-mins); retired++; continue; }
+      const keep=Math.max(5,mins-excess);
+      const nextEnd=new Date(new Date(block.start).getTime()+keep*60000).toISOString();
+      if(plannerCloudReady&&block.cloudId) await window.studentHubCloud.updateWorkBlock(block.cloudId,{end:nextEnd});
+      block.end=nextEnd; trimmed++; excess=0;
+    }
+    if(retire.length)await retireWorkBlocks(retire);
+    return {retired,trimmed};
+  }
+
+  function taskStatusFromRemaining(task,remaining){
+    if(remaining<=0)return 'done';
+    return 'in_progress';
+  }
+
+  async function setTaskProgress(task,newRemaining,{retireAll=false}={}){
+    if(!task)return;
+    const remaining=Math.max(0,Math.round(Number(newRemaining)||0));
+    const status=taskStatusFromRemaining(task,remaining);
+    if(plannerCloudReady&&task.cloudId) await window.studentHubCloud.updateTask(task.cloudId,{remaining,status});
+    task.remaining=remaining; task.status=status;
+    if(retireAll||remaining===0){
+      const blocks=state.events.filter(e=>e.type==='work'&&e.status!=='done'&&e.taskId===task.id);
+      await retireWorkBlocks(blocks);
+    }else await reconcileAdaptiveBlocksForTask(task,remaining);
+  }
+
+  async function syncAssessmentFromTasks(a){
+    if(!a)return;
+    const linked=(state.tasks||[]).filter(t=>t.assessmentId===a.id);
+    if(!linked.length)return;
+    const remaining=linked.filter(t=>t.status!=='done').reduce((sum,t)=>sum+Math.max(0,Number(t.remaining||0)),0);
+    const status=remaining<=0?'done':linked.some(t=>t.status==='in_progress')?'in_progress':'not_started';
+    if(academicCloudReady&&a.cloudId) await window.studentHubCloud.updateAssessment(a.cloudId,{remaining,status});
+    a.remaining=remaining; a.status=status;
+  }
+
+  async function applyStudyReflectionProgress(){
+    const p=pendingStudyReflection;
+    if(!p)return {message:'Session saved.'};
+    const a=assessment(p.assessmentId)||null;
+    const task=(state.tasks||[]).find(t=>t.id===p.taskId)||null;
+    const outcome=p.outcome||'progress';
+    const credit=Math.max(0,Math.round(Number(p.creditedMinutes)||0));
+    const extra=Math.max(0,Math.round(Number(p.extraMinutes)||0));
+
+    if(task){
+      const before=Math.max(0,Number(task.remaining||0));
+      const after=outcome==='done'?0:Math.max(0,before-credit)+(outcome==='more'?extra:0);
+      await setTaskProgress(task,after,{retireAll:outcome==='done'||after===0});
+      if(a)await syncAssessmentFromTasks(a);
+      return {message:after===0?`${task.title} completed.`:`${formatMinutes(after)} remains for ${task.title}.`};
+    }
+
+    if(a){
+      const openTasks=(state.tasks||[]).filter(t=>t.assessmentId===a.id&&t.status!=='done').sort((x,y)=>Number(x.position||0)-Number(y.position||0));
+      if(openTasks.length){
+        if(outcome==='done'){
+          for(const t of openTasks)await setTaskProgress(t,0,{retireAll:true});
+        }else{
+          let left=credit;
+          for(const t of openTasks){
+            if(left<=0)break;
+            const before=Math.max(0,Number(t.remaining||0));
+            const used=Math.min(before,left);
+            await setTaskProgress(t,before-used,{retireAll:before-used<=0});
+            left-=used;
+          }
+          if(outcome==='more'&&extra>0){
+            const target=openTasks.find(t=>t.status!=='done')||openTasks[openTasks.length-1];
+            await setTaskProgress(target,Math.max(0,Number(target.remaining||0))+extra);
+          }
+        }
+        await syncAssessmentFromTasks(a);
+      }else{
+        const before=Math.max(0,Number(a.remaining||0));
+        const after=outcome==='done'?0:Math.max(0,before-credit)+(outcome==='more'?extra:0);
+        const status=after<=0?'done':'in_progress';
+        if(academicCloudReady&&a.cloudId)await window.studentHubCloud.updateAssessment(a.cloudId,{remaining:after,status});
+        a.remaining=after; a.status=status;
+        if(after===0){
+          const blocks=state.events.filter(e=>e.type==='work'&&e.status!=='done'&&e.assessmentId===a.id);
+          await retireWorkBlocks(blocks);
+        }
+      }
+      return {message:a.remaining<=0?`${a.title} completed.`:`${formatMinutes(a.remaining)} remains for ${a.title}.`};
+    }
+    return {message:'Session saved.'};
+  }
+
+  async function saveStudyReflection(){
+    const p=pendingStudyReflection;
+    if(!p)return closeModals();
+    const button=qs('#saveStudyReflection');
+    if(button){button.disabled=true;button.textContent='Saving…';}
+    try{
+      const result=await applyStudyReflectionProgress();
+      pendingStudyReflection=null;
+      closeModals();
+      await recordStudySession(p.minutes,{toastMessage:result.message,sourceType:`focus_${p.outcome||'progress'}`});
+    }catch(error){
+      console.error('Study progress update failed:',error);
+      toast('Could not update the plan yet. Your timer is still paused, so you can retry this check-in.');
+      if(button){button.disabled=false;button.textContent='Save progress';}
+    }
+  }
+
   function toggleTimer(){ state.timer.running=!state.timer.running; save(); if(state.timer.running) startTimer(); else stopTimer(); render(); }
-  function startTimer(){ stopTimer(false); state.timer.running=true; if(!state.timer.initialSeconds||state.timer.initialSeconds<state.timer.seconds)state.timer.initialSeconds=state.timer.seconds; timerHandle=setInterval(()=>{ if(!state.timer.running)return; state.timer.seconds=Math.max(0,state.timer.seconds-1); const el=qs('#timerDisplay'); if(el)el.textContent=formatTimer(state.timer.seconds); if(state.timer.seconds===0){ stopTimer(); state.timer.running=false; const minutes=Math.max(1,Math.round((state.timer.initialSeconds||25*60)/60)); recordStudySession(minutes); } },1000); }
+  function startTimer(){ stopTimer(false); state.timer.running=true; if(!state.timer.initialSeconds||state.timer.initialSeconds<state.timer.seconds)state.timer.initialSeconds=state.timer.seconds; timerHandle=setInterval(()=>{ if(!state.timer.running)return; state.timer.seconds=Math.max(0,state.timer.seconds-1); const el=qs('#timerDisplay'); if(el)el.textContent=formatTimer(state.timer.seconds); if(state.timer.seconds===0){ stopTimer(); state.timer.running=false; const minutes=Math.max(1,Math.round((state.timer.initialSeconds||25*60)/60)); beginStudyCompletion(minutes); } },1000); }
   function stopTimer(setFalse=true){ if(timerHandle)clearInterval(timerHandle);timerHandle=null;if(setFalse)state.timer.running=false; }
   function formatTimer(s){ const m=Math.floor(s/60), sec=s%60;return `${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`; }
 
   function finishStudySession(){
     const initial=state.timer.initialSeconds||25*60; const elapsed=Math.max(0,initial-state.timer.seconds);
     if(elapsed<5)return toast('Start the focus timer before saving a session.');
-    stopTimer(); state.timer.running=false; recordStudySession(Math.max(1,Math.round(elapsed/60)));
+    stopTimer(); state.timer.running=false; beginStudyCompletion(Math.max(1,Math.round(elapsed/60)));
   }
 
-  async function recordStudySession(minutes){
-    const draft={id:uid('s'),courseId:state.timer.context.courseId,assessmentId:state.timer.context.assessmentId||'',topic:state.timer.context.topic,completedAt:new Date().toISOString(),minutes,sourceType:'focus'};
+  async function recordStudySession(minutes,options={}){
+    const draft={id:uid('s'),courseId:state.timer.context.courseId,assessmentId:state.timer.context.assessmentId||'',topic:state.timer.context.topic,completedAt:new Date().toISOString(),minutes,sourceType:options.sourceType||'focus'};
     try{
       if(knowledgeCloudReady&&cloudUser&&cloudSemester){ const row=await window.studentHubCloud.createStudySession(cloudUser,cloudSemester,draft,draft.id); state.studySessions.unshift(rowToStudySession(row)); }
       else state.studySessions.unshift(draft);
-      const preferred=Math.max(5*60,state.timer.initialSeconds||25*60); state.timer.seconds=preferred; state.timer.initialSeconds=preferred; state.timer.running=false; save(); render(); updateCloudStatusCard(); toast(knowledgeCloudReady?'Focus session saved.':'Focus session complete.');
-    }catch(error){ console.error('Study session sync failed:',error); state.studySessions.unshift(draft); save(); render(); toast('Session saved locally; cloud study sync failed.'); }
+      const preferred=Math.max(5*60,state.timer.initialSeconds||25*60); state.timer.seconds=preferred; state.timer.initialSeconds=preferred; state.timer.running=false; save(); render(); updateCloudStatusCard(); toast(options.toastMessage||(knowledgeCloudReady?'Focus session saved.':'Focus session complete.'));
+    }catch(error){ console.error('Study session sync failed:',error); state.studySessions.unshift(draft); save(); render(); toast(options.toastMessage?`${options.toastMessage} Session saved locally; cloud study sync failed.`:'Session saved locally; cloud study sync failed.'); }
   }
 
   function openResourceModal(){
@@ -2062,6 +2252,7 @@
   qs('#analyzeSyllabusFile')?.addEventListener('click',analyzeStoredSyllabus);
   qs('#importAiSyllabus')?.addEventListener('click',importReviewedAiSyllabus);
   qs('#applyPlannerPreview')?.addEventListener('click',applyPlannerPreview);
+  qs('#saveStudyReflection')?.addEventListener('click',saveStudyReflection);
   qs('#fillExample').addEventListener('click',()=>{qs('#quickAddInput').value='Chem lab report Friday 6pm, probably 2 hours';});
   qs('#parseQuickAdd').addEventListener('click',()=>{const text=qs('#quickAddInput').value.trim();if(!text)return toast('Type something to capture first.');quickParsed=parseNatural(text);showQuickPreview(quickParsed);});
   qs('#confirmQuickAdd').addEventListener('click',confirmQuick);

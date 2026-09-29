@@ -72,6 +72,19 @@
     };
   }
 
+  function emptyUserState(semesterName='My Semester'){
+    const base=seedState();
+    return {
+      ...base,
+      route:'today',
+      semester:{...base.semester,name:semesterName||'My Semester'},
+      courses:[],assessments:[],events:[],resources:[],inbox:[],tasks:[],studySessions:[],review:[],
+      timer:{seconds:25*60,initialSeconds:25*60,running:false,context:{courseId:'',assessmentId:'',topic:'Focused study'}},
+      onboarding:{dismissed:false,step:1},
+      availability:{weekdayStart:'16:00',weekdayEnd:'21:00',weekendStart:'10:00',weekendEnd:'18:00',maxDailyMinutes:180,weekends:true}
+    };
+  }
+
   function loadState(key=activeStorageKey){
     try { const raw=localStorage.getItem(key); if(raw){ const parsed=JSON.parse(raw); if(parsed.version===1) return parsed; } } catch(e){}
     return seedState();
@@ -83,6 +96,8 @@
   if (!Array.isArray(state.inbox)) state.inbox = [];
   if (!Array.isArray(state.studySessions)) state.studySessions = [];
   if (!state.timer.initialSeconds) state.timer.initialSeconds = state.timer.seconds || 25*60;
+  if (!state.availability || typeof state.availability!=='object') state.availability={weekdayStart:'16:00',weekdayEnd:'21:00',weekendStart:'10:00',weekendEnd:'18:00',maxDailyMinutes:180,weekends:true};
+  if (!state.onboarding || typeof state.onboarding!=='object') state.onboarding={dismissed:false,step:1};
   let activeCourseId = null;
   let activeCourseTab = 'overview';
   let quickParsed = null;
@@ -98,6 +113,10 @@
   let plannerMonthOffset = 0;
   let plannerExpandedGroups = new Set();
   let plannerPreview = null;
+  let libraryCourseFilter = 'all';
+  let libraryTopicFilter = '';
+  let resourceContextCourseId = '';
+  let onboardingPendingCourse = false;
 
   function ensurePlannerPrefs(){
     const defaults={view:'week',lens:'plan',courseId:'all',assessmentType:'all',density:'compact',layers:{fixed:true,work:true,deadlines:true}};
@@ -111,6 +130,7 @@
     return state.plannerPrefs;
   }
   ensurePlannerPrefs();
+  canonicalizeStateData();
 
   function save(){ localStorage.setItem(activeStorageKey, JSON.stringify(state)); updateBadges(); }
   function course(id){ return state.courses.find(c=>c.id===id); }
@@ -209,7 +229,7 @@
     qs('#themeToggle').textContent = state.theme==='dark' ? '☀' : '☾';
     qsa('[data-route]').forEach(b=>b.classList.toggle('active', b.dataset.route===state.route));
     qsa('.mobile-nav [data-route]').forEach(b=>b.classList.toggle('active', b.dataset.route===state.route));
-    const titleMap={today:['Semester workspace','Today'],planner:['Time layer','Planner'],courses:['Academic context','Courses'],study:['Learning layer','Study'],library:['Knowledge layer','Library'],inbox:['Capture layer','Inbox'],settings:['Demo controls','Settings']};
+    const titleMap={today:['Semester workspace','Today'],planner:['Time layer','Planner'],courses:['Academic context','Courses'],study:['Learning layer','Study'],library:['Knowledge layer','Library'],inbox:['Capture layer','Inbox'],settings:['Personalization','Settings']};
     const meta=titleMap[state.route]||titleMap.today;
     qs('#pageEyebrow').textContent=meta[0]; qs('#pageTitle').textContent=meta[1];
     const page=qs('#page');
@@ -221,62 +241,68 @@
   }
 
   function renderToday(){
-    const best=nextAssessment(); const c=best?course(best.courseId):null; const next=nextEvent();
-    const required=requiredMinutesThisWeek(), capacity=state.semester.availableMinutesPerWeek;
-    const pct=clamp(Math.round(required/capacity*100),0,125);
-    const todaysEvents=state.events.filter(e=>isToday(e.start)&&e.status!=='done').sort((a,b)=>new Date(a.start)-new Date(b.start));
-    const dueSoon=state.assessments.filter(a=>a.status!=='done').sort((a,b)=>new Date(a.due)-new Date(b.due)).slice(0,4);
+    const now=new Date();
+    const best=nextAssessment();
+    const dayStart=startOfDay(now), dayEnd=addDays(dayStart,1);
+    const derivedClasses=classScheduleEntries(dayStart,dayEnd).map(x=>({...x,type:'fixed'}));
+    const scheduled=state.events.filter(e=>e.status!=='done'&&e.type!=='fixed'&&new Date(e.start)>=dayStart&&new Date(e.start)<dayEnd);
+    const todaysEvents=[...derivedClasses,...scheduled].sort((a,b)=>new Date(a.start)-new Date(b.start));
+    const nextToday=todaysEvents.find(e=>new Date(e.end||e.start)>now)||null;
+    const nextStartsSoon=nextToday && new Date(nextToday.start).getTime()-now.getTime()<=4*60*60*1000;
+    const actionEvent=nextStartsSoon?nextToday:null;
+    const actionAssessment=actionEvent?.assessmentId?assessment(actionEvent.assessmentId):best;
+    const actionCourse=course(actionEvent?.courseId||actionAssessment?.courseId);
+    const actionIsClass=actionEvent?.type==='fixed';
+    const actionTitle=actionEvent?(actionIsClass?`${actionEvent.code||actionCourse?.code||'Class'} · ${actionCourse?.name||actionEvent.title||'Course'}`:actionEvent.title):(actionAssessment?.title||'');
+    const actionMeta=actionEvent?(actionIsClass?`${fmtTime(actionEvent.start)}–${fmtTime(actionEvent.end)}${actionEvent.room?` · ${actionEvent.room}`:''}`:`${fmtTime(actionEvent.start)}–${fmtTime(actionEvent.end)} · ${eventMinutes(actionEvent)} min planned`):(actionAssessment?`${formatMinutes(Math.min(preferredSessionMinutes(actionAssessment),Math.max(15,actionAssessment.remaining||45)))} focus · ${humanDue(actionAssessment.due)}`:'');
+    const dueSoon=dedupeAssessmentList(state.assessments.filter(a=>a.status!=='done'&&new Date(a.due)>=startOfDay(now))).sort((a,b)=>new Date(a.due)-new Date(b.due)).slice(0,4);
     const needsPlan=planningCandidates({limit:4});
-    const urgentPlan=needsPlan.filter(a=>planningState(a).days<=7);
-    const totalUnscheduled=needsPlan.reduce((sum,a)=>sum+unscheduledMinutesForAssessment(a),0);
+    const missedBlocks=state.events.filter(e=>e.type==='work'&&e.status!=='done'&&new Date(e.end)<now);
+    const required=requiredMinutesThisWeek(), capacity=Math.max(60,Number(state.semester.availableMinutesPerWeek||840));
+    const over=Math.max(0,required-capacity);
+    const repair=plannerRepairPreview();
+    const attention=missedBlocks.length||repair.remove.length||over>0||needsPlan.some(a=>planningState(a).days<=3);
+    const planTitle=missedBlocks.length?`${missedBlocks.length} study block${missedBlocks.length===1?'':'s'} slipped`:(over>0?`${formatMinutes(over)} above this week's capacity`:(needsPlan.length?`${needsPlan.length} deadline${needsPlan.length===1?' needs':'s need'} calendar coverage`:'Your plan is on track'));
+    const planCopy=missedBlocks.length?'Review the missed work and rebalance only what still matters.':over>0?'Reduce, move, or defer study work before the week becomes unrealistic.':needsPlan.length?'Smart Plan can place the highest-priority unscheduled work without moving fixed classes.':'Nothing urgent needs replanning right now.';
+
+    if(!state.courses.length){
+      return `<section class="today-empty-start card"><span class="eyebrow">Start here</span><h2>Turn your semester into a plan.</h2><p>Add your first course, set realistic study availability, then import a syllabus. Student Hub will connect deadlines, topics, materials and study time.</p><div class="button-row"><button class="btn primary" id="startOnboarding">Set up semester</button><button class="btn secondary" id="openAddCourse">Add course manually</button></div></section>`;
+    }
+
     return `
-      <div class="hero-grid">
-        <article class="card hero-card">
-          <div class="hero-kicker"><span class="pill success">● Semester synced</span><span class="pill">${esc(state.semester.name)}</span></div>
-          <h2>${next ? `Next: ${esc(next.title)}` : 'You are clear for now.'}</h2>
-          <p>${next ? `${esc(courseName(next.courseId))} · ${fmtTime(next.start)}–${fmtTime(next.end)}${course(next.courseId)?.room ? ` · ${esc(course(next.courseId).room)}`:''}` : 'Use the open time for your highest-risk assessment or a due review.'}</p>
-          ${best ? `<div class="next-action"><div><span class="eyebrow">Best next action</span><strong><span class="course-dot" style="--course-color:${c.color}"></span> ${esc(best.title)} · ${Math.min(45,best.remaining||45)} min</strong><small>Suggested because it is due ${humanDue(best.due)} with ${formatMinutes(best.remaining)} remaining.</small></div><div class="button-row"><button class="btn primary" data-start-focus="${best.id}">Start focus</button><button class="btn secondary" data-plan="${best.id}">Plan work</button></div></div>`:''}
+      <section class="today-command-grid">
+        <article class="card today-next-card">
+          <div class="today-card-head"><span class="eyebrow">${actionEvent?'Next scheduled':'Next action'}</span>${actionEvent?`<span class="pill">${fmtTime(actionEvent.start)}</span>`:''}</div>
+          ${actionTitle?`<div class="today-next-main"><span class="course-dot large" style="--course-color:${actionCourse?.color||'var(--accent)'}"></span><div><h2>${esc(actionTitle)}</h2><p>${esc(actionCourse?.name||'Course')} · ${esc(actionMeta)}</p></div></div><div class="today-reason">${actionEvent?(actionIsClass?'Your recurring timetable puts this class next.':'This block is already reserved in your plan.'):(actionAssessment?`Suggested because ${humanDue(actionAssessment.due)==='overdue'?'it is overdue':`it is due ${humanDue(actionAssessment.due)}`} and ${formatMinutes(actionAssessment.remaining)} remains.`:'')}</div><div class="button-row">${actionIsClass?`<button class="btn primary" data-open-course-id="${actionCourse?.id||''}">Open course</button>`:actionAssessment?`<button class="btn primary" data-start-focus="${actionAssessment.id}">${actionEvent?'Start focus':`Start ${Math.min(preferredSessionMinutes(actionAssessment),Math.max(15,actionAssessment.remaining||45))} min`}</button><button class="btn secondary" data-plan="${actionAssessment.id}">Review plan</button>`:`<button class="btn secondary" data-route-jump="planner">Open planner</button>`}</div>`:`<div class="empty-state compact"><div class="empty-icon">✓</div><h3>No urgent academic work</h3><p>Your upcoming deadlines are currently covered.</p></div>`}
         </article>
-        <article class="card capacity-card">
-          <div><span class="eyebrow">Workload capacity</span><h3 style="margin:7px 0 0;font-size:16px">This week</h3></div>
-          <div class="capacity-ring" style="--capacity:${Math.min(pct,100)}"><div><strong>${pct}%</strong><small>of capacity</small></div></div>
-          <div class="capacity-meta"><span>${formatMinutes(required)} required</span><span>${formatMinutes(capacity)} available</span></div>
-          <div class="pill ${required>capacity?'warning':'success'}" style="text-align:center;margin-top:13px">${required>capacity?`${formatMinutes(required-capacity)} over capacity`:`${formatMinutes(capacity-required)} buffer`}</div>
-        </article>
-      </div>
 
-      ${needsPlan.length?`
-      <article class="card planning-pulse">
-        <div class="planning-pulse-copy">
-          <span class="eyebrow">Planning pulse</span>
-          <h3>${urgentPlan.length?`${urgentPlan.length} near-term deadline${urgentPlan.length===1?'':'s'} need a plan`:`${needsPlan.length} upcoming deadline${needsPlan.length===1?'':'s'} still need scheduling`}</h3>
-          <p>${formatMinutes(totalUnscheduled)} of the highest-priority work is not yet placed on your calendar. Smart planning respects deadlines, existing blocks, and your weekly capacity.</p>
-        </div>
-        <div class="planning-pulse-items">
-          ${needsPlan.slice(0,3).map(a=>{
-            const ps=planningState(a), cc=course(a.courseId);
-            return `<div class="planning-mini"><span class="course-dot" style="--course-color:${cc?.color||'var(--accent)'}"></span><div><strong>${esc(a.title)}</strong><small>${esc(cc?.name||'Course')} · ${humanDue(a.due)} · ${formatMinutes(ps.unscheduled)} unscheduled</small></div><span class="plan-status ${ps.tone}">${ps.label}</span></div>`;
-          }).join('')}
-        </div>
-        <div class="planning-pulse-actions"><button class="btn secondary" data-route-jump="planner">Review planner</button><button class="btn primary" id="smartPlanToday">Build study plan</button></div>
-      </article>`:''}
-
-      <div class="section-head"><div><h2>Today’s timeline</h2><p>Fixed commitments and scheduled work are intentionally separate.</p></div><button class="btn secondary" data-route-jump="planner">Open planner</button></div>
-      <div class="section-grid">
-        <article class="card timeline">
-          ${todaysEvents.length?todaysEvents.map(e=>timelineRow(e)).join(''):`<div class="empty-state"><div class="empty-icon">○</div><h3>Open day</h3><p>No fixed or planned events today.</p></div>`}
+        <article class="card today-plan-card ${attention?'attention':'calm'}">
+          <div class="today-card-head"><span class="eyebrow">Plan status</span><span class="plan-state-dot">${attention?'!':'✓'}</span></div>
+          <h3>${esc(planTitle)}</h3><p>${esc(planCopy)}</p>
+          <div class="today-plan-metrics"><span><strong>${formatMinutes(required)}</strong><small>due workload</small></span><span><strong>${formatMinutes(capacity)}</strong><small>weekly capacity</small></span><span><strong>${needsPlan.length}</strong><small>need planning</small></span></div>
+          <div class="button-row">${repair.remove.length?`<button class="btn primary" id="reviewPlanRepair">Repair plan</button>`:`<button class="btn ${attention?'primary':'secondary'}" id="smartPlanToday">${attention?'Preview changes':'Check smart plan'}</button>`}<button class="btn secondary" data-route-jump="planner">Open planner</button></div>
         </article>
-        <article class="card list-card">
-          ${dueSoon.map(a=>{const c=course(a.courseId);return `<div class="list-row"><div><strong><span class="course-dot" style="--course-color:${c?.color||'var(--accent)'}"></span> ${esc(a.title)}</strong><small>${esc(c?.name||'Course')} · ${formatMinutes(a.remaining)} left · ${a.type}</small></div><span class="date-chip">${humanDue(a.due)}</span></div>`}).join('')}
-        </article>
-      </div>
+      </section>
 
-      <div class="section-head"><div><h2>Review queue</h2><p>Study is connected to the same course and topic objects.</p></div><button class="btn secondary" data-route-jump="study">Study now</button></div>
-      <div class="review-queue">${state.review.slice(0,3).map(r=>reviewRow(r)).join('')}</div>
+      <section class="today-two-column">
+        <article class="card today-agenda-card">
+          <div class="section-head compact"><div><h2>Today</h2><p>Classes and planned work, in time order.</p></div><button class="btn ghost compact-btn" id="openQuickAddToday">+ Capture</button></div>
+          <div class="timeline calm-timeline">${todaysEvents.length?todaysEvents.map(todayTimelineRow).join(''):`<div class="empty-state compact"><div class="empty-icon">○</div><h3>Open day</h3><p>No classes or study blocks are scheduled today.</p></div>`}</div>
+        </article>
+        <article class="card today-upcoming-card">
+          <div class="section-head compact"><div><h2>Coming up</h2><p>Only the deadlines that deserve attention next.</p></div><button class="btn ghost compact-btn" data-route-jump="planner">See all</button></div>
+          <div class="today-deadline-list">${dueSoon.length?dueSoon.map(a=>{const c=course(a.courseId),ps=planningState(a);return `<button class="today-deadline-row" data-preview-plan="${a.id}"><span class="course-dot" style="--course-color:${c?.color||'var(--accent)'}"></span><div><strong>${esc(a.title)}</strong><small>${esc(c?.name||'Course')} · ${formatMinutes(a.remaining)} left</small></div><span class="today-due ${ps.tone}">${humanDue(a.due)}</span></button>`}).join(''):`<div class="empty-state compact"><p>No upcoming deadlines.</p></div>`}</div>
+        </article>
+      </section>
     `;
   }
 
-  function timelineRow(e){ const c=course(e.courseId); const label=e.type==='fixed'?'Fixed event':e.type==='work'?'Work block':'Study session'; return `<div class="timeline-item"><span class="timeline-time">${fmtTime(e.start)}</span><span class="timeline-line" style="--item-color:${c?.color||'var(--accent)'}"></span><div class="timeline-copy"><strong>${esc(e.title)}</strong><small>${esc(c?.name||'Personal')} · ${label}</small></div><span class="timeline-status">${Math.round((new Date(e.end)-new Date(e.start))/60000)}m</span></div>`; }
+  function todayTimelineRow(e){
+    const c=course(e.courseId), isClass=e.type==='fixed';
+    return `<div class="timeline-item today-row"><span class="timeline-time">${fmtTime(e.start)}</span><span class="timeline-line" style="--item-color:${c?.color||'var(--accent)'}"></span><div class="timeline-copy"><strong>${esc(isClass?(e.code||e.title):e.title)}</strong><small>${isClass?`${esc(c?.name||e.title)}${e.room?` · ${esc(e.room)}`:''}`:`${esc(c?.name||'Study')} · planned study`}</small></div><span class="timeline-status">${isClass?'Class':`${eventMinutes(e)}m`}</span></div>`;
+  }
+
+  function timelineRow(e){ return todayTimelineRow(e); }
   function reviewRow(r){ const c=course(r.courseId); return `<div class="review-item"><div><strong><span class="course-dot" style="--course-color:${c.color}"></span> ${esc(r.topic)}</strong><small>${esc(c.name)} · ${r.due===isoDate(new Date())?'Due today':'Due '+fmtDate(r.due,{month:'short',day:'numeric'})}</small></div><div class="mastery">${r.mastery}%</div></div>`; }
 
   function plannerMonthStart(){
@@ -357,6 +383,19 @@
     const raw=urgency*effort*weight*weakness*gradeGap;
     return clamp(Math.round(16*Math.log2(1+raw)),5,100);
   }
+  function priorityDescriptor(a){
+    const ps=planningState(a), score=academicPriorityScore(a), remaining=Math.max(0,Number(a?.remaining??a?.effort??0)), weight=Number(a?.weight||0);
+    const level=score>=70?'High':score>=42?'Medium':'Normal';
+    const tone=score>=70?'danger':score>=42?'warning':'neutral';
+    const reasons=[];
+    if(ps.days<=2) reasons.push('due very soon'); else if(ps.days<=7) reasons.push('due this week');
+    if(weight>=20) reasons.push(`${weight}% of course`);
+    if(remaining>=180) reasons.push(`${formatMinutes(remaining)} remaining`);
+    if(ps.unscheduled>5) reasons.push(`${formatMinutes(ps.unscheduled)} unplanned`);
+    if(!reasons.length) reasons.push('covered by current plan');
+    return {level,tone,reasons:reasons.slice(0,3)};
+  }
+
   function preferredSessionMinutes(a){
     const topics=new Set((a?.topics||[]).map(x=>String(x).toLowerCase()));
     const samples=(state.studySessions||[])
@@ -518,7 +557,11 @@
     const lensButton=(key,label)=>`<button class="planner-segment ${prefs.lens===key?'active':''}" data-planner-lens="${key}">${label}</button>`;
     return `<div class="planner-commandbar card">
       <div class="planner-period-nav"><button class="icon-btn planner-arrow" id="plannerPrevPeriod" aria-label="Previous period">←</button><button class="planner-period-label" id="plannerToday">${esc(plannerPeriodLabel())}<small>Jump to today</small></button><button class="icon-btn planner-arrow" id="plannerNextPeriod" aria-label="Next period">→</button></div>
-      <div class="planner-command-groups"><div class="planner-segments" aria-label="Calendar view">${viewButton('week','Week')}${viewButton('month','Month')}${viewButton('agenda','Agenda')}</div><div class="planner-segments four" aria-label="Planner lens">${lensButton('plan','Plan')}${lensButton('classes','Classes')}${lensButton('deadlines','Deadlines')}${lensButton('courses','Courses')}${lensButton('impact','Impact')}</div></div>
+      <div class="planner-command-groups">
+        <div class="planner-control-cluster"><small>View</small><div class="planner-segments" aria-label="Calendar view">${viewButton('week','Week')}${viewButton('month','Month')}${viewButton('agenda','Agenda')}</div></div>
+        <div class="planner-control-cluster"><small>Show</small><div class="planner-segments" aria-label="Planner content">${lensButton('plan','My plan')}${lensButton('classes','Timetable')}${lensButton('deadlines','Deadlines')}</div></div>
+        <div class="planner-control-cluster insights"><small>Insights</small><div class="planner-segments" aria-label="Planner insights">${lensButton('courses','Course load')}${lensButton('impact','Priorities')}</div></div>
+      </div>
       <button class="btn primary" id="autoPlan">Preview smart plan</button>
     </div>`;
   }
@@ -535,7 +578,7 @@
   }
   function renderCourseLens(start,end){
     if(ensurePlannerPrefs().lens!=='courses') return '';
-    return `<div class="planner-course-lens">${state.courses.map(c=>{ const load=plannerCourseLoad(c.id,start,end); return `<button class="course-load-card ${ensurePlannerPrefs().courseId===c.id?'active':''}" data-planner-course-filter="${c.id}" style="--course-color:${c.color}"><span class="course-dot" style="--course-color:${c.color}"></span><div><strong>${esc(c.name)}</strong><small>${formatMinutes(load.scheduled)} planned · ${load.deadlines.length} deadline${load.deadlines.length===1?'':'s'}</small></div><span class="impact-chip">${load.maxImpact?`Impact ${load.maxImpact}`:'Clear'}</span></button>`; }).join('')}</div>`;
+    return `<div class="planner-course-lens">${state.courses.map(c=>{ const load=plannerCourseLoad(c.id,start,end); const highest=load.deadlines.slice().sort((a,b)=>academicPriorityScore(b)-academicPriorityScore(a))[0]; const priority=highest?priorityDescriptor(highest):null; return `<button class="course-load-card ${ensurePlannerPrefs().courseId===c.id?'active':''}" data-planner-course-filter="${c.id}" style="--course-color:${c.color}"><span class="course-dot" style="--course-color:${c.color}"></span><div><strong>${esc(c.name)}</strong><small>${formatMinutes(load.scheduled)} planned · ${load.deadlines.length} deadline${load.deadlines.length===1?'':'s'}</small></div><span class="impact-chip ${priority?.tone||''}">${priority?`${priority.level} priority`:'Clear'}</span></button>`; }).join('')}</div>`;
   }
   function renderDeadlineRunway(){
     if(ensurePlannerPrefs().lens!=='deadlines') return '';
@@ -545,8 +588,8 @@
     return `<div class="deadline-runway">${buckets.map(([label,min,max])=>{ const list=items.filter(a=>{const d=(new Date(a.due)-now)/DAY;return d>=min&&d<max;}); return `<section class="deadline-bucket"><div class="deadline-bucket-head"><strong>${label}</strong><span>${list.length}</span></div>${list.length?list.slice(0,6).map(a=>deadlineRunwayItem(a)).join(''):`<div class="deadline-empty">Nothing here</div>`}</section>`; }).join('')}</div>`;
   }
   function deadlineRunwayItem(a){
-    const c=course(a.courseId), ps=planningState(a), impact=academicPriorityScore(a);
-    return `<button class="deadline-runway-item" data-preview-plan="${a.id}" style="--course-color:${c?.color||'var(--accent)'}"><span class="course-dot" style="--course-color:${c?.color||'var(--accent)'}"></span><div><strong>${esc(a.title)}</strong><small>${esc(c?.name||'Course')} · ${humanDue(a.due)} · ${formatMinutes(ps.unscheduled)} unplanned</small></div><span class="impact-chip ${ps.tone}">${impact}</span></button>`;
+    const c=course(a.courseId), ps=planningState(a), priority=priorityDescriptor(a);
+    return `<button class="deadline-runway-item" data-preview-plan="${a.id}" style="--course-color:${c?.color||'var(--accent)'}"><span class="course-dot" style="--course-color:${c?.color||'var(--accent)'}"></span><div><strong>${esc(a.title)}</strong><small>${esc(c?.name||'Course')} · ${humanDue(a.due)} · ${formatMinutes(ps.unscheduled)} unplanned</small></div><span class="impact-chip ${priority.tone}">${priority.level}</span></button>`;
   }
   function renderPlannerWeek(start){
     const prefs=ensurePlannerPrefs();
@@ -589,7 +632,10 @@
   }
   function compactEventCard(e){
     const c=course(e.courseId), draggable=['work','study'].includes(e.type), detailed=ensurePlannerPrefs().density==='comfortable';
-    return `<div class="event-card compact-event ${detailed?'detailed':'dense'}" ${draggable?'draggable="true"':''} data-event-id="${e.id}" style="--event-color:${c?.color||'var(--accent)'}"><div class="event-type">${e.type==='fixed'?'class':e.type}${e.cloudId?' · cloud':''}</div><strong>${esc(e.title)}</strong>${detailed?`<span class="event-course-meta">${esc(c?.name||'Course')}${c?.room?` · ${esc(c.room)}`:''}</span>`:''}<small>${fmtTime(e.start)}–${fmtTime(e.end)}${detailed?` · ${eventMinutes(e)}m`:''}</small></div>`;
+    const a=e.assessmentId?assessment(e.assessmentId):null;
+    const primary=!detailed&&a?a.title:e.title;
+    const secondary=detailed?`${esc(c?.name||'Course')}${c?.room?` · ${esc(c.room)}`:''}`:(a&&e.title!==a.title?`${eventMinutes(e)}m planned session`:esc(c?.name||'Course'));
+    return `<div class="event-card compact-event ${detailed?'detailed':'dense'}" ${draggable?'draggable="true"':''} data-event-id="${e.id}" style="--event-color:${c?.color||'var(--accent)'}"><div class="event-type">${e.type==='fixed'?'class':'study block'}</div><strong>${esc(primary)}</strong><span class="event-course-meta">${secondary}</span><small>${fmtTime(e.start)}–${fmtTime(e.end)}${detailed?` · ${eventMinutes(e)}m`:''}</small></div>`;
   }
   function deadlineFlag(a){
     const c=course(a.courseId), ps=planningState(a);
@@ -627,14 +673,14 @@
     const inRange=items.filter(a=>new Date(a.due)>=start&&new Date(a.due)<end);
     if(inRange.length) items=inRange;
     items=items.sort((a,b)=>academicPriorityScore(b)-academicPriorityScore(a)).slice(0,12);
-    return `<div class="impact-board"><div class="impact-note"><strong>Academic Impact</strong><span>This is a planning heuristic, not a grade prediction. It combines urgency, remaining effort, assessment weight, topic weakness, and your course grade gap.</span></div>${items.length?items.map(a=>{const c=course(a.courseId),score=academicPriorityScore(a),weak=topicWeakness(a),ps=planningState(a),coverage=ps.remaining?Math.min(100,Math.round(ps.planned/ps.remaining*100)):100,gradeGap=Math.max(0,Math.round((Number(c?.target||0)-Number(c?.grade||0))*10)/10);return `<article class="impact-card" style="--course-color:${c?.color||'var(--accent)'}"><div class="impact-score"><strong>${score}</strong><span>impact</span></div><div class="impact-main"><span class="eyebrow">${esc(c?.name||'Course')} · ${esc(a.type)}</span><h3>${esc(a.title)}</h3><p>${humanDue(a.due)} · ${formatMinutes(a.remaining)} remaining · ${preferredSessionMinutes(a)}m preferred sessions</p><div class="impact-factors"><span><b>${Number(a.weight||0)}%</b> weight</span><span><b>${weak}%</b> topic gap</span><span><b>${gradeGap}%</b> grade gap</span><span><b>${coverage}%</b> planned</span></div></div><button class="btn secondary compact-btn" data-preview-plan="${a.id}">Preview plan</button></article>`;}).join(''):`<div class="empty-state"><div class="empty-icon">✓</div><h3>No matching upcoming assessments</h3><p>Change the course/type filter or time period.</p></div>`}</div>`;
+    return `<div class="impact-board"><div class="impact-note"><strong>Why these need attention</strong><span>Priority explains the reasons behind the plan instead of exposing an arbitrary score. It uses urgency, remaining effort, assessment weight, review gaps and plan coverage.</span></div>${items.length?items.map(a=>{const c=course(a.courseId),priority=priorityDescriptor(a),weak=topicWeakness(a),ps=planningState(a),coverage=ps.remaining?Math.min(100,Math.round(ps.planned/ps.remaining*100)):100,gradeGap=Math.max(0,Math.round((Number(c?.target||0)-Number(c?.grade||0))*10)/10);return `<article class="impact-card" style="--course-color:${c?.color||'var(--accent)'}"><div class="priority-badge ${priority.tone}"><strong>${priority.level}</strong><span>priority</span></div><div class="impact-main"><span class="eyebrow">${esc(c?.name||'Course')} · ${esc(a.type)}</span><h3>${esc(a.title)}</h3><p>${humanDue(a.due)} · ${formatMinutes(a.remaining)} remaining · ${preferredSessionMinutes(a)}m preferred sessions</p><div class="priority-reasons">${priority.reasons.map(r=>`<span>${esc(r)}</span>`).join('')}</div><div class="impact-factors"><span><b>${coverage}%</b> planned</span>${weak?`<span><b>${weak}%</b> review gap</span>`:''}${gradeGap?`<span><b>${gradeGap}%</b> to target</span>`:''}</div></div><button class="btn secondary compact-btn" data-preview-plan="${a.id}">Preview plan</button></article>`;}).join(''):`<div class="empty-state"><div class="empty-icon">✓</div><h3>No matching upcoming assessments</h3><p>Change the course/type filter or time period.</p></div>`}</div>`;
   }
 
   function renderUnscheduledShelf(){
     const prefs=ensurePlannerPrefs();
     if(prefs.lens==='deadlines') return '';
     const candidates=planningCandidates({courseId:prefs.courseId==='all'?'':prefs.courseId,limit:10}).filter(plannerAssessmentMatches);
-    return `<section class="unscheduled-shelf"><div class="section-head compact"><div><h2>Unscheduled shelf</h2><p>Work stays here until it earns calendar space. Smart Plan previews changes before saving them.</p></div>${candidates.length?`<span class="pill">${candidates.length} need planning</span>`:''}</div><div class="unscheduled-track">${candidates.length?candidates.map(a=>{const c=course(a.courseId),ps=planningState(a),impact=academicPriorityScore(a);return `<article class="unscheduled-card" style="--course-color:${c?.color||'var(--accent)'}"><div class="unscheduled-card-head"><span class="course-dot" style="--course-color:${c?.color||'var(--accent)'}"></span><span class="impact-chip">Impact ${impact}</span></div><strong>${esc(a.title)}</strong><small>${esc(c?.name||'Course')} · ${humanDue(a.due)}</small><div class="unscheduled-meta"><span>${formatMinutes(ps.unscheduled)} unplanned</span><span>${preferredSessionMinutes(a)}m sessions</span></div><button class="btn secondary compact-btn" data-preview-plan="${a.id}">Preview plan</button></article>`;}).join(''):`<div class="unscheduled-clear"><span>✓</span><div><strong>Everything upcoming has calendar coverage</strong><small>New work will appear here when it needs scheduling.</small></div></div>`}</div></section>`;
+    return `<section class="unscheduled-shelf"><div class="section-head compact"><div><h2>Unscheduled shelf</h2><p>Work stays here until it earns calendar space. Smart Plan previews changes before saving them.</p></div>${candidates.length?`<span class="pill">${candidates.length} need planning</span>`:''}</div><div class="unscheduled-track">${candidates.length?candidates.map(a=>{const c=course(a.courseId),ps=planningState(a),priority=priorityDescriptor(a);return `<article class="unscheduled-card" style="--course-color:${c?.color||'var(--accent)'}"><div class="unscheduled-card-head"><span class="course-dot" style="--course-color:${c?.color||'var(--accent)'}"></span><span class="impact-chip ${priority.tone}">${priority.level} priority</span></div><strong>${esc(a.title)}</strong><small>${esc(c?.name||'Course')} · ${humanDue(a.due)}</small><div class="unscheduled-meta"><span>${formatMinutes(ps.unscheduled)} unplanned</span><span>${preferredSessionMinutes(a)}m sessions</span></div><div class="priority-reasons compact">${priority.reasons.slice(0,2).map(r=>`<span>${esc(r)}</span>`).join('')}</div><button class="btn secondary compact-btn" data-preview-plan="${a.id}">Preview plan</button></article>`;}).join(''):`<div class="unscheduled-clear"><span>✓</span><div><strong>Everything upcoming has calendar coverage</strong><small>New work will appear here when it needs scheduling.</small></div></div>`}</div></section>`;
   }
   function renderPlanner(){
     const prefs=ensurePlannerPrefs(), range=plannerRange(), health=planHealth();
@@ -645,7 +691,7 @@
     return `${renderPlannerControlBar()}${stats}
       ${prefs.lens==='classes'?'':healthIssue?`<article class="planner-health warning"><div><span class="eyebrow">Plan health</span><strong>${health.overBy?`${formatMinutes(health.overBy)} over this week's capacity`:''}${health.overBy&&health.repairCount?' · ':''}${health.repairCount?`${health.repairCount} adaptive block${health.repairCount===1?'':'s'} can be repaired`:''}</strong><small>${health.repairCount?'Repair only touches future auto-generated blocks; fixed classes and manual work stay unchanged.':'This overload comes from manual or legacy work, so it cannot be safely auto-deleted.'}</small></div><button class="btn secondary" id="reviewPlanRepair">${health.repairCount?'Review repair':'Review overload'}</button></article>`:`<article class="planner-health success"><div><span class="eyebrow">Plan health</span><strong>Capacity and planning windows look consistent</strong><small>Future auto-generated blocks are inside their deadline windows and weekly limits.</small></div><span class="health-check">✓</span></article>`}
       ${prefs.lens==='classes'?'':renderDeadlineRunway()}${prefs.lens==='classes'?'':renderCourseLens(range.start,range.end)}
-      <div class="planner-shell ${prefs.density}">${renderPlannerFilters(range.start,range.end)}<main class="planner-calendar-panel"><div class="planner-view-caption"><div><span class="eyebrow">${prefs.lens==='plan'?'Time plan':prefs.lens==='classes'?'Class timetable':prefs.lens==='deadlines'?'Deadline runway':prefs.lens==='impact'?'Academic impact':'Course load'}</span><h2>${esc(plannerPeriodLabel())}</h2></div><span class="planner-hint">${prefs.lens==='classes'?'Recurring course schedule only':prefs.view==='week'?'Drag individual expanded study blocks between days':prefs.view==='month'?'Select a date to zoom into its week':'Compact chronological view'}</span></div>${mainView}</main></div>
+      <div class="planner-shell ${prefs.density}">${renderPlannerFilters(range.start,range.end)}<main class="planner-calendar-panel"><div class="planner-view-caption"><div><span class="eyebrow">${prefs.lens==='plan'?'Time plan':prefs.lens==='classes'?'Class timetable':prefs.lens==='deadlines'?'Deadline runway':prefs.lens==='impact'?'Priorities':'Course load'}</span><h2>${esc(plannerPeriodLabel())}</h2></div><span class="planner-hint">${prefs.lens==='classes'?'Recurring course schedule only':prefs.view==='week'?'Drag individual expanded study blocks between days':prefs.view==='month'?'Select a date to zoom into its week':'Compact chronological view'}</span></div>${mainView}</main></div>
       ${prefs.lens==='classes'?'':renderUnscheduledShelf()}
       <details class="card planner-details"><summary><span>Task breakdown</span><small>${openTasks.length} open planner task${openTasks.length===1?'':'s'} · expand when you need execution detail</small></summary><div class="task-queue embedded">${openTasks.length?openTasks.slice(0,20).map(taskRow).join(''):`<div class="empty-state compact"><div class="empty-icon">✓</div><h3>No open planner tasks</h3><p>Use Preview smart plan on an assessment to create a task breakdown.</p></div>`}</div></details>`;
   }
@@ -654,7 +700,7 @@
 
   function renderCourses(){
     if(activeCourseId){ return renderCourseDetail(activeCourseId); }
-    return `<div class="section-head" style="margin-top:0"><div><h2>Your course graph</h2><p>Courses and assessments now sync through Appwrite.</p></div><div class="button-row"><button class="btn secondary" id="openImport">Import syllabus</button><button class="btn primary" id="openAddCourse">+ Add course</button></div></div><div class="course-grid">${state.courses.map(c=>{
+    return `<div class="section-head" style="margin-top:0"><div><h2>Your course graph</h2><p>Your semester structure: classes, deadlines, topics and materials in one academic context.</p></div><div class="button-row"><button class="btn secondary" id="openImport">Import syllabus</button><button class="btn primary" id="openAddCourse">+ Add course</button></div></div><div class="course-grid">${state.courses.map(c=>{
       const upcoming=state.assessments.filter(a=>a.courseId===c.id&&a.status!=='done').sort((a,b)=>new Date(a.due)-new Date(b.due));
       return `<article class="card course-card" data-course="${c.id}" style="--course-color:${c.color};--progress:${Math.min(100,c.grade)}%"><span class="pill"><span class="course-dot" style="--course-color:${c.color}"></span> ${esc(c.code)}</span><h3>${esc(c.name)}</h3><p>${esc(c.teacher||'No instructor yet')} · ${esc(c.schedule||'Schedule not set')}</p><div class="progress-track"><span></span></div><div class="course-meta"><span>${c.grade}% current</span><span>${upcoming[0]?`${esc(upcoming[0].title)} · ${humanDue(upcoming[0].due)}`:'No upcoming work'}</span></div></article>`
     }).join('')}</div>`;
@@ -666,10 +712,9 @@
     let body='';
     if(activeCourseTab==='overview') body=`<div class="section-grid"><article class="card list-card">${ass.slice(0,5).map(a=>`<div class="list-row"><div><strong>${esc(a.title)}</strong><small>${a.type} · ${formatMinutes(a.remaining)} left</small></div><span class="date-chip">${humanDue(a.due)}</span></div>`).join('')}</article><article class="card pad"><span class="eyebrow">Topics</span><div class="topic-cloud" style="margin-top:13px">${dedupeTopics(c.topics).map(t=>`<span class="topic-chip">${esc(t)}</span>`).join('')}</div></article></div>`;
     if(activeCourseTab==='work') body=`<article class="card list-card">${ass.map(a=>`<div class="list-row"><div><strong>${esc(a.title)}</strong><small>${a.type} · ${a.status.replace('_',' ')}</small></div><div class="button-row"><span class="date-chip">${humanDue(a.due)}</span><button class="btn secondary" data-plan="${a.id}">Plan</button></div></div>`).join('')}</article>`;
-    if(activeCourseTab==='topics') body=`<div class="course-grid">${dedupeTopics(c.topics).map(t=>{const count=res.filter(r=>String(r.topic||'').toLowerCase()===String(t||'').toLowerCase()).length; const review=state.review.find(r=>r.courseId===id&&r.topic===t);return `<article class="card pad"><span class="course-dot" style="--course-color:${c.color}"></span><h3 style="margin:15px 0 5px">${esc(t)}</h3><p style="color:var(--muted);font-size:11px">${count} linked resources${review?` · mastery ${review.mastery}%`:''}</p></article>`}).join('')}</div>`;
-    if(activeCourseTab==='materials') body=`<div class="resource-grid">${res.map(resourceCard).join('')}</div>`;
-    if(activeCourseTab==='grades') body=`<article class="card pad"><span class="eyebrow">Course progress</span><h3 style="font-size:34px;letter-spacing:-.05em;margin:12px 0">${c.grade}%</h3><p style="color:var(--muted);font-size:11px">Target ${c.target}% · demo grade data</p><div class="progress-track" style="--course-color:${c.color};--progress:${c.grade}%"><span></span></div></article>`;
-    return `<button class="btn ghost" id="backCourses">← All courses</button><article class="card course-detail-head" style="--course-color:${c.color};margin-top:10px"><div><span class="pill"><span class="course-dot" style="--course-color:${c.color}"></span> ${esc(c.code)}</span><h2>${esc(c.name)}</h2><p>${esc(c.teacher)} · ${esc(c.room)} · ${esc(c.schedule)}</p></div><div><span class="eyebrow">Current grade</span><strong style="display:block;font-size:28px;margin-top:5px">${c.grade}%</strong></div></article><div class="detail-tabs">${['overview','work','topics','materials','grades'].map(t=>`<button class="${activeCourseTab===t?'active':''}" data-course-tab="${t}">${t[0].toUpperCase()+t.slice(1)}</button>`).join('')}</div>${body}`;
+    if(activeCourseTab==='topics') body=`<div class="course-grid">${dedupeTopics(c.topics).map(t=>{const count=res.filter(r=>String(r.topic||'').toLowerCase()===String(t||'').toLowerCase()).length; const review=state.review.find(r=>r.courseId===id&&r.topic===t);return `<button class="card pad topic-link-card" data-open-library-topic="${esc(t)}" data-open-library-topic-course="${c.id}"><span class="course-dot" style="--course-color:${c.color}"></span><h3 style="margin:15px 0 5px">${esc(t)}</h3><p style="color:var(--muted);font-size:11px">${count} linked resources${review?` · mastery ${review.mastery}%`:''}</p><small>Open materials →</small></button>`}).join('')}</div>`;
+    if(activeCourseTab==='materials') body=`<div class="context-toolbar card"><div><span class="eyebrow">Shared Library</span><strong>${esc(c.name)} materials</strong><small>These are the same resources stored in Library, filtered to this course.</small></div><div class="button-row"><button class="btn secondary" data-open-library-course="${c.id}">Open Library</button><button class="btn primary" data-add-resource-course="${c.id}">+ Add material</button></div></div><div class="resource-grid">${res.length?res.map(resourceCard).join(''):`<div class="card empty-state"><div class="empty-icon">▤</div><h3>No materials yet</h3><p>Add one here or from Library. It will appear in both places.</p></div>`}</div>`;
+    return `<button class="btn ghost" id="backCourses">← All courses</button><article class="card course-detail-head" style="--course-color:${c.color};margin-top:10px"><div><span class="pill"><span class="course-dot" style="--course-color:${c.color}"></span> ${esc(c.code)}</span><h2>${esc(c.name)}</h2><p>${esc(c.teacher)} · ${esc(c.room)} · ${esc(c.schedule)}</p></div>${Number(c.grade)>0?`<div><span class="eyebrow">Current grade</span><strong style="display:block;font-size:28px;margin-top:5px">${c.grade}%</strong></div>`:''}</article><div class="detail-tabs">${['overview','work','topics','materials'].map(t=>`<button class="${activeCourseTab===t?'active':''}" data-course-tab="${t}">${t[0].toUpperCase()+t.slice(1)}</button>`).join('')}</div>${body}`;
   }
 
   const practiceBank=[
@@ -679,15 +724,25 @@
     {courseId:'alg',topic:'Graphs',q:'When is breadth-first search preferred over depth-first search for an unweighted graph?',a:'When you need shortest path length in number of edges, because BFS explores vertices level by level.'}
   ];
   function renderStudy(){
-    const t=state.timer; const c=course(t.context.courseId); const q=practiceBank[state.practiceIndex%practiceBank.length];
+    const t=state.timer;
+    if(!state.courses.length){
+      return `<article class="card empty-state study-empty"><div class="empty-icon">◎</div><h2>Study starts with academic context.</h2><p>Add a course and deadline first. Student Hub will use them to start focused sessions with the right materials attached.</p><div class="button-row"><button class="btn primary" id="startOnboarding">Set up semester</button><button class="btn secondary" data-route-jump="courses">Go to courses</button></div></article>`;
+    }
+    const contextCourse=course(t.context.courseId)||state.courses[0];
+    const contextAssessment=assessment(t.context.assessmentId);
+    if(!t.context.courseId&&contextCourse) t.context.courseId=contextCourse.id;
+    const contextTopic=t.context.topic||contextAssessment?.topics?.[0]||'Focused study';
+    const matchingResources=state.resources.filter(r=>r.courseId===contextCourse?.id && (!contextTopic||contextTopic==='Focused study'||topicKey(r.topic)===topicKey(contextTopic))).slice(0,5);
     const recent=[...(state.studySessions||[])].sort((a,b)=>new Date(b.completedAt)-new Date(a.completedAt)).slice(0,6);
     const totalMinutes=(state.studySessions||[]).reduce((sum,x)=>sum+Number(x.minutes||0),0);
-    return `<div class="study-layout"><article class="card focus-card"><span class="eyebrow">Focus session</span><div class="timer" id="timerDisplay">${formatTimer(t.seconds)}</div><div class="timer-context"><span class="course-dot" style="--course-color:${c?.color||'var(--accent)'}"></span> ${esc(c?.name||'Study')} → ${esc(t.context.topic)}</div><div class="button-row" style="margin-top:24px"><button class="btn primary" id="timerToggle">${t.running?'Pause':'Start'}</button><button class="btn secondary" id="timerReset">Reset</button><button class="btn secondary" id="finishSession">Finish & save</button></div><p class="cloud-note">${knowledgeCloudReady?'Completed focus sessions sync to Appwrite.':'Focus completion is local until study_sessions is ready.'}</p></article><article class="card practice-card"><span class="eyebrow">Practice from your course context</span><h3><span class="course-dot" style="--course-color:${colorForCourse(q.courseId)}"></span> ${esc(q.topic)}</h3><div class="practice-question"><p>${esc(q.q)}</p><p class="answer hidden" id="practiceAnswer">${esc(q.a)}</p></div><div class="button-row"><button class="btn secondary" id="showAnswer">Reveal answer</button><button class="btn primary" id="nextQuestion">Next question</button></div></article></div><div class="section-head"><div><h2>Due for review</h2><p>Simple spaced-review queue for the prototype.</p></div></div><div class="review-queue">${state.review.map(reviewRow).join('')}</div><div class="section-head"><div><h2>Study history</h2><p>${formatMinutes(totalMinutes)} recorded across ${(state.studySessions||[]).length} session${(state.studySessions||[]).length===1?'':'s'}.</p></div><span class="pill ${knowledgeCloudReady?'success':''}">${knowledgeCloudReady?'Cloud sessions synced':'Study cloud unavailable'}</span></div><article class="card session-history">${recent.length?recent.map(studySessionRow).join(''):`<div class="empty-state"><div class="empty-icon">◎</div><h3>No completed focus sessions yet</h3><p>Finish a timer and the session will appear here.</p></div>`}</article>`;
+    return `<div class="study-execution-grid"><article class="card focus-card execution-focus"><div class="today-card-head"><span class="eyebrow">Focus now</span>${contextAssessment?`<span class="pill">${esc(contextAssessment.type)}</span>`:''}</div><h2>${esc(contextAssessment?.title||contextTopic)}</h2><p class="focus-context-line"><span class="course-dot" style="--course-color:${contextCourse?.color||'var(--accent)'}"></span>${esc(contextCourse?.name||'Study')} · ${esc(contextTopic)}</p><div class="timer" id="timerDisplay">${formatTimer(t.seconds)}</div><div class="button-row focus-actions"><button class="btn primary" id="timerToggle">${t.running?'Pause':'Start'}</button><button class="btn secondary" id="timerReset">Reset</button><button class="btn secondary" id="finishSession">Finish & save</button></div><p class="quiet-note">When you finish, the actual study time is recorded and can improve future session sizing.</p></article><article class="card session-materials"><div class="section-head compact"><div><span class="eyebrow">For this session</span><h2>Materials</h2></div><button class="btn ghost compact-btn" data-open-library-course="${contextCourse?.id||''}">Open Library</button></div>${matchingResources.length?`<div class="session-material-list">${matchingResources.map(r=>`<button class="session-material" data-open-library-resource="${r.id}"><span>${r.type==='PDF'?'▤':r.type==='Link'?'↗':'✎'}</span><div><strong>${esc(r.title)}</strong><small>${esc(r.topic||'General')} · ${esc(r.type)}</small></div></button>`).join('')}</div>`:`<div class="empty-state compact"><p>No material is linked to this topic yet.</p><button class="btn secondary compact-btn" data-add-resource-course="${contextCourse?.id||''}">+ Add material</button></div>`}</article></div><div class="section-head"><div><h2>Due for review</h2><p>Review prompts stay secondary to the session you chose to do now.</p></div></div><div class="review-queue">${state.review.length?state.review.map(reviewRow).join(''):`<div class="card empty-state compact"><p>No review items are due.</p></div>`}</div><div class="section-head"><div><h2>Study history</h2><p>${formatMinutes(totalMinutes)} recorded across ${(state.studySessions||[]).length} session${(state.studySessions||[]).length===1?'':'s'}.</p></div><span class="pill ${knowledgeCloudReady?'success':''}">${knowledgeCloudReady?'Synced':'Local'}</span></div><article class="card session-history">${recent.length?recent.map(studySessionRow).join(''):`<div class="empty-state"><div class="empty-icon">◎</div><h3>No completed focus sessions yet</h3><p>Finish a timer and the session will appear here.</p></div>`}</article>`;
   }
   function studySessionRow(session){ const c=course(session.courseId); return `<div class="session-row"><div><strong><span class="course-dot" style="--course-color:${c?.color||'var(--accent)'}"></span> ${esc(session.topic||'Study')}</strong><small>${esc(c?.name||'Course')} · ${fmtDate(session.completedAt,{month:'short',day:'numeric'})} ${fmtTime(session.completedAt)}</small></div><span class="pill">${formatMinutes(session.minutes)}</span></div>`; }
 
   function renderLibrary(){
-    return `<div class="library-toolbar"><input class="search-input" id="librarySearch" placeholder="Search notes, files, links and topics..."/><div class="button-row"><span class="pill ${knowledgeCloudReady?'success':''}">${knowledgeCloudReady?'Cloud library synced':'Library cloud unavailable'}</span><button class="btn primary" id="openAddResource">+ Add resource</button></div></div><div class="resource-grid" id="resourceGrid">${state.resources.map(resourceCard).join('')}</div>`;
+    const filtered=state.resources.filter(r=>(libraryCourseFilter==='all'||r.courseId===libraryCourseFilter)&&(!libraryTopicFilter||topicKey(r.topic)===topicKey(libraryTopicFilter)));
+    const filterButton=(id,label,color='var(--accent)')=>`<button class="library-filter ${libraryCourseFilter===id?'active':''}" data-library-course="${id}"><span class="course-dot" style="--course-color:${color}"></span>${esc(label)}</button>`;
+    return `<div class="library-toolbar"><div class="library-search-wrap"><input class="search-input" id="librarySearch" placeholder="Search notes, files, links and topics..."/><small>One Library. Course pages and Study simply show filtered views of the same materials.</small></div><div class="button-row"><span class="pill ${knowledgeCloudReady?'success':''}">${knowledgeCloudReady?'Synced':'Local'}</span><button class="btn primary" id="openAddResource">+ Add resource</button></div></div><div class="library-filter-row">${filterButton('all','All materials','#6d63ed')}${state.courses.map(c=>filterButton(c.id,c.name,c.color)).join('')}${libraryTopicFilter?`<button class="library-topic-clear" id="clearLibraryTopic">Topic: ${esc(libraryTopicFilter)} ×</button>`:''}</div><div class="resource-grid" id="resourceGrid">${filtered.length?filtered.map(resourceCard).join(''):`<div class="card empty-state"><div class="empty-icon">⌁</div><h3>No materials match this view</h3><p>Try another course filter or add a new resource.</p></div>`}</div>`;
   }
   function resourceCard(r){
     const c=course(r.courseId);
@@ -697,19 +752,24 @@
       : r.url ? `<a class="resource-open" href="${esc(r.url)}" target="_blank" rel="noopener">Open ↗</a>` : '';
     const fileMeta=r.storageFileId ? `<div class="file-meta">${esc(r.fileName||'Stored PDF')} · ${formatBytes(r.fileSize||0)}</div>` : '';
     const remove=r.storageFileId ? `<button class="resource-delete" data-delete-resource="${esc(r.id)}">Delete</button>` : '';
-    return `<article class="card resource-card" data-resource-text="${esc((r.title+' '+r.topic+' '+courseName(r.courseId)+' '+r.description+' '+(r.fileName||'')).toLowerCase())}"><div><div class="resource-icon">${icon}</div><h3>${esc(r.title)}</h3><p>${esc(r.description)}</p>${fileMeta}<div class="resource-actions">${action}${remove}</div></div><footer><span><span class="course-dot" style="--course-color:${c?.color||'var(--accent)'}"></span> ${esc(c?.name||'Unassigned')} · ${esc(r.topic||'General')}</span><span>${esc(r.updated||'Cloud')}</span></footer></article>`;
+    return `<article class="card resource-card" data-resource-text="${esc((r.title+' '+r.topic+' '+courseName(r.courseId)+' '+r.description+' '+(r.fileName||'')).toLowerCase())}"><div><div class="resource-icon">${icon}</div><h3>${esc(r.title)}</h3><p>${esc(r.description)}</p>${fileMeta}<div class="resource-actions">${action}${remove}</div></div><footer><span><span class="course-dot" style="--course-color:${c?.color||'var(--accent)'}"></span> ${esc(c?.name||'Unassigned')} · ${esc(r.topic||'General')}</span><span>${esc(r.updated||'Synced')}</span></footer></article>`;
   }
 
   function renderInbox(){
     const items=state.inbox.filter(i=>!i.processed).sort((a,b)=>new Date(b.created)-new Date(a.created));
-    return `<div class="inbox-compose"><textarea id="inboxInput" placeholder="Drop something here without organizing it first..."></textarea><button class="btn primary" id="captureInbox">Capture</button></div><div class="section-head"><div><h2>Unorganized capture</h2><p>Process later. Captures now follow you between devices.</p></div><span class="pill ${knowledgeCloudReady?'success':''}">${knowledgeCloudReady?'Cloud inbox synced':'Inbox cloud unavailable'}</span></div><div class="inbox-list">${items.length?items.map(i=>`<article class="card inbox-item"><div><p>${esc(i.text)}</p><small>Captured ${timeAgo(i.created)}</small></div><div class="button-row"><button class="btn secondary" data-organize="${i.id}">Organize</button><button class="btn ghost" data-archive="${i.id}">Archive</button></div></article>`).join(''):`<div class="card empty-state"><div class="empty-icon">✓</div><h3>Inbox zero</h3><p>Everything captured has been processed.</p></div>`}</div>`;
+    return `<div class="inbox-compose"><textarea id="inboxInput" placeholder="Drop something here without organizing it first..."></textarea><button class="btn primary" id="captureInbox">Capture</button></div><div class="section-head"><div><h2>Process later</h2><p>Inbox is temporary staging. Turn each capture into a deadline, material, note, or archive it.</p></div><span class="pill ${knowledgeCloudReady?'success':''}">${knowledgeCloudReady?'Synced':'Local'}</span></div><div class="inbox-list">${items.length?items.map(i=>`<article class="card inbox-item"><div><p>${esc(i.text)}</p><small>Captured ${timeAgo(i.created)}</small></div><div class="button-row"><button class="btn primary" data-organize="${i.id}">Process</button><button class="btn ghost" data-archive="${i.id}">Archive</button></div></article>`).join(''):`<div class="card empty-state"><div class="empty-icon">✓</div><h3>Inbox zero</h3><p>Everything captured has been processed.</p></div>`}</div>`;
   }
 
   function renderSettings(){
-    const academicLabel = academicCloudReady ? 'Courses + assessments cloud' : 'Academic cloud unavailable';
-    const plannerLabel = plannerCloudReady ? 'Tasks + work blocks cloud' : 'Planner cloud unavailable';
-    const knowledgeLabel = knowledgeCloudReady ? 'Library + Inbox + study cloud' : 'Knowledge cloud unavailable';
-    return `<div class="settings-grid"><article class="card setting-card"><h3>Weekly study capacity</h3><p>The workload engine compares estimated required work with the time you realistically have.</p><label class="eyebrow" for="capacityInput">Hours / week</label><input id="capacityInput" type="number" min="1" max="80" step=".5" value="${state.semester.availableMinutesPerWeek/60}" style="width:100%;margin-top:7px"/></article><article class="card setting-card"><h3>Cloud academic data</h3><p>Semester, courses, assessments, planner tasks, work blocks, resources, Inbox, and study sessions use Appwrite.</p><span class="pill ${academicCloudReady?'success':''}">${academicLabel}</span> <span class="pill ${plannerCloudReady?'success':''}">${plannerLabel}</span> <span class="pill ${knowledgeCloudReady?'success':''}">${knowledgeLabel}</span></article><article class="card setting-card"><h3>Private academic files</h3><p>PDFs are stored privately in <strong>academic_files</strong>. Short-lived server-generated tokens are used when you open a PDF.</p><span class="pill ${window.studentHubCloud?.storage?'success':''}">${window.studentHubCloud?.storage?'Storage ready':'Storage unavailable'}</span></article><article class="card setting-card"><h3>Academic AI</h3><p>The <strong>academic-ai</strong> Appwrite Function reads your private syllabus as you, sends it to OpenRouter server-side, and returns reviewable structured data.</p><span class="pill ${window.studentHubCloud?.functions?'success':''}">${window.studentHubCloud?.functions?'Function client ready':'Function unavailable'}</span></article></div>`;
+    const availability=state.availability||{};
+    const syncReady=academicCloudReady&&plannerCloudReady&&knowledgeCloudReady;
+    const uniqueTopics=new Set(state.courses.flatMap(c=>dedupeTopics(c.topics||[]).map(topicKey))).size;
+    return `<div class="settings-grid">
+      <article class="card setting-card availability-card"><span class="eyebrow">Planning assumptions</span><h3>Study availability</h3><p>Make capacity personal so overload warnings mean something.</p><div class="setting-field-grid"><label><span>Hours / week</span><input id="capacityInput" type="number" min="1" max="80" step=".5" value="${state.semester.availableMinutesPerWeek/60}"/></label><label><span>Max / day (min)</span><input id="maxDailyInput" type="number" min="30" max="600" step="15" value="${availability.maxDailyMinutes||180}"/></label><label><span>Weekday start</span><input id="weekdayStartInput" type="time" value="${esc(availability.weekdayStart||'16:00')}"/></label><label><span>Weekday end</span><input id="weekdayEndInput" type="time" value="${esc(availability.weekdayEnd||'21:00')}"/></label><label><span>Weekend start</span><input id="weekendStartInput" type="time" value="${esc(availability.weekendStart||'10:00')}"/></label><label><span>Weekend end</span><input id="weekendEndInput" type="time" value="${esc(availability.weekendEnd||'18:00')}"/></label></div><label class="setting-check"><input id="weekendsInput" type="checkbox" ${availability.weekends!==false?'checked':''}/><span>Allow weekend study blocks</span></label><small>Smart Plan still respects existing events and deadlines.</small></article>
+      <article class="card setting-card"><span class="eyebrow">Academic data</span><h3>Canonical semester model</h3><p>Course → deadline → task → study block is the single planning chain. Materials and topics attach to that context instead of becoming separate systems.</p><div class="settings-metrics"><span><strong>${state.courses.length}</strong><small>courses</small></span><span><strong>${state.assessments.length}</strong><small>deadlines</small></span><span><strong>${uniqueTopics}</strong><small>topics</small></span></div><span class="pill success">Duplicate naming normalized</span></article>
+      <article class="card setting-card"><span class="eyebrow">Sync</span><h3>${syncReady?'Everything important is synced':'Some data is local'}</h3><p>${syncReady?'Courses, deadlines, plans, materials, Inbox and study history are available across signed-in devices.':'Student Hub will keep working locally where possible, but one or more cloud data groups need attention.'}</p><span class="pill ${syncReady?'success':'warning'}">${syncReady?'Synced':'Check setup'}</span></article>
+      <article class="card setting-card"><span class="eyebrow">Onboarding</span><h3>Semester setup</h3><p>Replay the setup guide without deleting existing data.</p><button class="btn secondary" id="restartOnboarding">Open setup guide</button></article>
+    </div><details class="card technical-settings"><summary><span>Technical diagnostics</span><small>Appwrite storage, database and Academic AI status</small></summary><div class="technical-grid"><div><strong>Academic data</strong><small>${academicCloudReady?'ready':'needs attention'}</small></div><div><strong>Planner data</strong><small>${plannerCloudReady?'ready':'needs attention'}</small></div><div><strong>Knowledge data</strong><small>${knowledgeCloudReady?'ready':'needs attention'}</small></div><div><strong>Private files</strong><small>${window.studentHubCloud?.storage?'ready':'needs attention'}</small></div><div><strong>Academic AI</strong><small>${window.studentHubCloud?.functions?'client ready':'needs attention'}</small></div></div></details>`;
   }
 
   function bindPageEvents(){
@@ -718,10 +778,13 @@
     qsa('[data-plan]').forEach(b=>b.onclick=()=>openPlannerPreview({assessmentId:b.dataset.plan}));
     qsa('[data-preview-plan]').forEach(b=>b.onclick=()=>openPlannerPreview({assessmentId:b.dataset.previewPlan}));
     qsa('[data-course]').forEach(b=>b.onclick=()=>{activeCourseId=b.dataset.course; activeCourseTab='overview'; render();});
+    qsa('[data-open-course-id]').forEach(b=>b.onclick=()=>{activeCourseId=b.dataset.openCourseId;activeCourseTab='overview';state.route='courses';save();render();});
     qs('#backCourses')?.addEventListener('click',()=>{activeCourseId=null;render();});
     qsa('[data-course-tab]').forEach(b=>b.onclick=()=>{activeCourseTab=b.dataset.courseTab;render();});
     qs('#openImport')?.addEventListener('click',openImport);
     qs('#openAddCourse')?.addEventListener('click',openCourseModal);
+    qs('#startOnboarding')?.addEventListener('click',()=>openOnboarding(1));
+    qs('#openQuickAddToday')?.addEventListener('click',()=>openQuickAdd());
     qs('#autoPlan')?.addEventListener('click',()=>openPlannerPreview({all:true}));
     qs('#smartPlanAll')?.addEventListener('click',()=>openPlannerPreview({all:true}));
     qs('#smartPlanToday')?.addEventListener('click',()=>openPlannerPreview({all:true}));
@@ -745,13 +808,26 @@
     qs('#showAnswer')?.addEventListener('click',()=>qs('#practiceAnswer')?.classList.toggle('hidden'));
     qs('#nextQuestion')?.addEventListener('click',()=>{state.practiceIndex=(state.practiceIndex+1)%practiceBank.length;save();render();});
     qs('#librarySearch')?.addEventListener('input',e=>{const q=e.target.value.toLowerCase();qsa('[data-resource-text]').forEach(card=>card.style.display=card.dataset.resourceText.includes(q)?'':'none');});
-    qs('#openAddResource')?.addEventListener('click',openResourceModal);
+    qs('#openAddResource')?.addEventListener('click',()=>{resourceContextCourseId=libraryCourseFilter==='all'?'':libraryCourseFilter;openResourceModal();});
+    qsa('[data-library-course]').forEach(b=>b.onclick=()=>{libraryCourseFilter=b.dataset.libraryCourse||'all';libraryTopicFilter='';render();});
+    qs('#clearLibraryTopic')?.addEventListener('click',()=>{libraryTopicFilter='';render();});
+    qsa('[data-open-library-course]').forEach(b=>b.onclick=()=>{libraryCourseFilter=b.dataset.openLibraryCourse||'all';libraryTopicFilter='';setRoute('library');});
+    qsa('[data-open-library-topic]').forEach(b=>b.onclick=()=>{libraryCourseFilter=b.dataset.openLibraryTopicCourse||'all';libraryTopicFilter=b.dataset.openLibraryTopic||'';setRoute('library');});
+    qsa('[data-add-resource-course]').forEach(b=>b.onclick=()=>{resourceContextCourseId=b.dataset.addResourceCourse||'';openResourceModal();});
+    qsa('[data-open-library-resource]').forEach(b=>b.onclick=()=>{const r=state.resources.find(x=>x.id===b.dataset.openLibraryResource);if(!r)return;if(r.storageFileId)return openStoredResource(r.id);if(r.url){window.open(r.url,'_blank','noopener');return;}libraryCourseFilter=r.courseId||'all';libraryTopicFilter=r.topic||'';setRoute('library');});
     qsa('[data-open-resource]').forEach(b=>b.onclick=()=>openStoredResource(b.dataset.openResource));
     qsa('[data-delete-resource]').forEach(b=>b.onclick=()=>deleteStoredResource(b.dataset.deleteResource));
     qs('#captureInbox')?.addEventListener('click',captureInboxItem);
     qsa('[data-organize]').forEach(b=>b.onclick=()=>{const i=state.inbox.find(x=>x.id===b.dataset.organize); if(!i)return; openQuickAdd(i.text, i.id);});
     qsa('[data-archive]').forEach(b=>b.onclick=()=>archiveInboxItem(b.dataset.archive));
     qs('#capacityInput')?.addEventListener('change',e=>{state.semester.availableMinutesPerWeek=Math.round(Number(e.target.value||14)*60);save();toast('Weekly capacity updated.');});
+    qs('#maxDailyInput')?.addEventListener('change',e=>{state.availability.maxDailyMinutes=clamp(Math.round(Number(e.target.value||180)),30,600);save();});
+    qs('#weekdayStartInput')?.addEventListener('change',e=>{state.availability.weekdayStart=e.target.value||'16:00';save();});
+    qs('#weekdayEndInput')?.addEventListener('change',e=>{state.availability.weekdayEnd=e.target.value||'21:00';save();});
+    qs('#weekendStartInput')?.addEventListener('change',e=>{state.availability.weekendStart=e.target.value||'10:00';save();});
+    qs('#weekendEndInput')?.addEventListener('change',e=>{state.availability.weekendEnd=e.target.value||'18:00';save();});
+    qs('#weekendsInput')?.addEventListener('change',e=>{state.availability.weekends=e.target.checked;save();});
+    qs('#restartOnboarding')?.addEventListener('click',()=>{state.onboarding={dismissed:false,step:1};save();openOnboarding(1);});
   }
 
   function taskTemplatesForAssessment(a){
@@ -814,7 +890,7 @@
     return {mins,unscheduled,weeks:weeks.size};
   }
   function openPlannerPreview(options={}){
-    if(!plannerCloudReady||!cloudUser||!cloudSemester){toast('Planner cloud is not ready. Check tasks and work_blocks in Appwrite.');return;}
+    if(!plannerCloudReady||!cloudUser||!cloudSemester){toast('Planner sync is not ready. Open Settings → Technical diagnostics.');return;}
     plannerPreview=buildPlannerPreview(options);
     renderPlannerPreviewModal();
     openModal(qs('#plannerPreviewModal'));
@@ -838,7 +914,7 @@
       eyebrow.textContent='Smart Plan Preview'; title.textContent='Review the proposed study plan'; apply.textContent='Apply plan';
       const s=plannerPreviewSummary(plannerPreview), blocks=plannerPreview.blocks||[];
       const grouped=new Map(); blocks.forEach(e=>{const k=isoDate(e.start);if(!grouped.has(k))grouped.set(k,[]);grouped.get(k).push(e);});
-      host.innerHTML=`<div class="preview-summary-grid"><div><span>New sessions</span><strong>${blocks.length}</strong></div><div><span>Study time placed</span><strong>${formatMinutes(s.mins)}</strong></div><div><span>Weeks used</span><strong>${s.weeks||0}</strong></div><div class="${s.unscheduled?'warning':''}"><span>Could not place</span><strong>${formatMinutes(s.unscheduled)}</strong></div></div><div class="preview-explainer"><strong>Nothing has been saved yet.</strong><p>Sessions are fitted after fixed commitments, inside each assessment's planning window, and under your weekly capacity. Session length also learns from your recorded focus history when available.</p></div>${plannerPreview.warnings?.length?`<div class="preview-warning">${plannerPreview.warnings.length} item${plannerPreview.warnings.length===1?'':'s'} could not fully fit. The remaining work stays on the Unscheduled shelf.</div>`:''}<div class="preview-days">${[...grouped.entries()].sort((a,b)=>a[0].localeCompare(b[0])).map(([date,items])=>`<section><header><strong>${fmtDate(`${date}T12:00:00`,{weekday:'long',month:'short',day:'numeric'})}</strong><span>${formatMinutes(items.reduce((sum,e)=>sum+eventMinutes(e),0))}</span></header>${items.map(e=>{const a=assessment(e.assessmentId),c=course(e.courseId);return `<div class="preview-row" style="--row-color:${c?.color||'var(--accent)'}"><span>${fmtTime(e.start)}<small>${eventMinutes(e)}m</small></span><div><strong>${esc(e.title)}</strong><small>${esc(c?.name||'Course')} · due ${fmtDate(a?.due,{month:'short',day:'numeric'})} · Impact ${academicPriorityScore(a)}</small></div><span class="preview-add">+ Add</span></div>`;}).join('')}</section>`).join('')||'<div class="empty-state compact"><div class="empty-icon">✓</div><h3>No new sessions needed</h3><p>Visible upcoming work is already covered, or no safe slots remain before its deadlines.</p></div>'}</div>`;
+      host.innerHTML=`<div class="preview-summary-grid"><div><span>New sessions</span><strong>${blocks.length}</strong></div><div><span>Study time placed</span><strong>${formatMinutes(s.mins)}</strong></div><div><span>Weeks used</span><strong>${s.weeks||0}</strong></div><div class="${s.unscheduled?'warning':''}"><span>Could not place</span><strong>${formatMinutes(s.unscheduled)}</strong></div></div><div class="preview-explainer"><strong>Nothing has been saved yet.</strong><p>Sessions are fitted after fixed commitments, inside each assessment's planning window, and under your weekly capacity. Session length also learns from your recorded focus history when available.</p></div>${plannerPreview.warnings?.length?`<div class="preview-warning">${plannerPreview.warnings.length} item${plannerPreview.warnings.length===1?'':'s'} could not fully fit. The remaining work stays on the Unscheduled shelf.</div>`:''}<div class="preview-days">${[...grouped.entries()].sort((a,b)=>a[0].localeCompare(b[0])).map(([date,items])=>`<section><header><strong>${fmtDate(`${date}T12:00:00`,{weekday:'long',month:'short',day:'numeric'})}</strong><span>${formatMinutes(items.reduce((sum,e)=>sum+eventMinutes(e),0))}</span></header>${items.map(e=>{const a=assessment(e.assessmentId),c=course(e.courseId);return `<div class="preview-row" style="--row-color:${c?.color||'var(--accent)'}"><span>${fmtTime(e.start)}<small>${eventMinutes(e)}m</small></span><div><strong>${esc(e.title)}</strong><small>${esc(c?.name||'Course')} · due ${fmtDate(a?.due,{month:'short',day:'numeric'})} · ${priorityDescriptor(a).level} priority</small></div><span class="preview-add">+ Add</span></div>`;}).join('')}</section>`).join('')||'<div class="empty-state compact"><div class="empty-icon">✓</div><h3>No new sessions needed</h3><p>Visible upcoming work is already covered, or no safe slots remain before its deadlines.</p></div>'}</div>`;
       apply.disabled=!blocks.length;
     }
   }
@@ -896,13 +972,20 @@
   }
 
   function dailyPlanningLimit(){
+    const configured=Number(state.availability?.maxDailyMinutes||0);
+    if(configured>0) return clamp(Math.round(configured),30,600);
     return Math.max(90,Math.min(240,Math.round((state.semester.availableMinutesPerWeek||840)/5)));
   }
 
   function candidateWindowsForDay(day,flexible=false){
-    const dow=new Date(day).getDay();
-    if(flexible) return dow===0||dow===6 ? [['09:00','20:30']] : [['08:00','21:30']];
-    return dow===0||dow===6 ? [['10:00','18:00']] : [['15:30','21:00']];
+    const dow=new Date(day).getDay(), weekend=dow===0||dow===6, a=state.availability||{};
+    if(weekend&&a.weekends===false) return [];
+    const preferred=weekend?[a.weekendStart||'10:00',a.weekendEnd||'18:00']:[a.weekdayStart||'16:00',a.weekdayEnd||'21:00'];
+    if(flexible){
+      const widened=weekend?['09:00','20:30']:['08:00','21:30'];
+      return [preferred,widened].filter((x,i,arr)=>arr.findIndex(y=>y[0]===x[0]&&y[1]===x[1])===i);
+    }
+    return [preferred];
   }
 
   function findPlanningSlot(a,requestedMinutes,extraEvents=[]){
@@ -947,7 +1030,7 @@
 
   async function planAssessment(id, options={}){
     const a=assessment(id); if(!a)return 0;
-    if(!plannerCloudReady || !cloudUser || !cloudSemester){ if(!options.silent)toast('Planner cloud is not ready. Check tasks and work_blocks in Appwrite.'); return 0; }
+    if(!plannerCloudReady || !cloudUser || !cloudSemester){ if(!options.silent)toast('Planner sync is not ready. Open Settings → Technical diagnostics.'); return 0; }
     if(new Date(a.due)<=new Date()){if(!options.silent)toast('This deadline is already overdue, so new work blocks were not created.');return 0;}
     try{
       const tasks=await ensureTasksForAssessment(a);
@@ -980,7 +1063,7 @@
       save(); render(); updateCloudStatusCard();
       if(!options.silent){
         if(made&&unscheduled>5) toast(`Placed ${made} work block${made!==1?'s':''}; ${formatMinutes(unscheduled)} could not fit before the deadline/capacity limit.`);
-        else if(made) toast(`Smart plan created ${made} cloud work block${made!==1?'s':''}.`);
+        else if(made) toast(`Smart plan created ${made} study block${made!==1?'s':''}.`);
         else toast(unscheduled>5?'No safe slot fits before this deadline within your capacity.':'This assessment is already fully planned.');
       }
       return made;
@@ -1015,7 +1098,7 @@
         if(a.cloudId) await window.studentHubCloud.updateAssessment(a.cloudId,{remaining,status:a.status});
       }
       save(); render(); toast(`${task.title} completed.`);
-    }catch(error){ task.remaining=oldRemaining; console.error(error); toast('Could not complete the task in Appwrite.'); }
+    }catch(error){ task.remaining=oldRemaining; console.error(error); toast('Could not sync the completed task.'); }
   }
 
   function bindDragDrop(){
@@ -1031,8 +1114,8 @@
         ev.start=dateAt(new Date(col.dataset.day),time).toISOString(); ev.end=new Date(new Date(ev.start).getTime()+duration).toISOString();
         save(); render();
         if(ev.type==='work'&&ev.cloudId&&plannerCloudReady){
-          try{ await window.studentHubCloud.updateWorkBlock(ev.cloudId,{start:ev.start,end:ev.end}); toast('Cloud work block moved.'); }
-          catch(error){ console.error(error); ev.start=oldStart; ev.end=oldEnd; save(); render(); toast('Could not move the cloud block. Change reverted.'); }
+          try{ await window.studentHubCloud.updateWorkBlock(ev.cloudId,{start:ev.start,end:ev.end}); toast('Study block moved.'); }
+          catch(error){ console.error(error); ev.start=oldStart; ev.end=oldEnd; save(); render(); toast('Could not sync that move. Change reverted.'); }
         }else toast('Study block moved locally.');
       });
     });
@@ -1054,15 +1137,17 @@
     try{
       if(knowledgeCloudReady&&cloudUser&&cloudSemester){ const row=await window.studentHubCloud.createStudySession(cloudUser,cloudSemester,draft,draft.id); state.studySessions.unshift(rowToStudySession(row)); }
       else state.studySessions.unshift(draft);
-      state.timer.seconds=25*60; state.timer.initialSeconds=25*60; save(); render(); updateCloudStatusCard(); toast(knowledgeCloudReady?'Focus session saved to Appwrite.':'Focus session complete.');
+      state.timer.seconds=25*60; state.timer.initialSeconds=25*60; save(); render(); updateCloudStatusCard(); toast(knowledgeCloudReady?'Focus session saved.':'Focus session complete.');
     }catch(error){ console.error('Study session sync failed:',error); state.studySessions.unshift(draft); save(); render(); toast('Session saved locally; cloud study sync failed.'); }
   }
 
   function openResourceModal(){
-    if(!knowledgeCloudReady){toast('Library cloud sync is not ready. Check the resources table.');return;}
+    if(!knowledgeCloudReady){toast('Library sync is not ready yet.');return;}
+    if(!state.courses.length){toast('Add a course before adding course material.');return;}
     const form=qs('#addResourceForm'); form?.reset();
-    const select=qs('#resourceCourse'); if(select)select.innerHTML=state.courses.map(c=>`<option value="${c.id}">${esc(c.code)} · ${esc(c.name)}</option>`).join('');
-    qs('#resourceType').value='Note'; qs('#resourceTopic').value=state.courses[0]?.topics?.[0]||'General';
+    const select=qs('#resourceCourse'); if(select){select.innerHTML=state.courses.map(c=>`<option value="${c.id}">${esc(c.code)} · ${esc(c.name)}</option>`).join(''); if(resourceContextCourseId&&course(resourceContextCourseId))select.value=resourceContextCourseId;}
+    const selected=course(select?.value)||state.courses[0];
+    qs('#resourceType').value='Note'; qs('#resourceTopic').value=selected?.topics?.[0]||'General';
     setResourceTypeFields(); setUploadStatus('');
     openModal(qs('#addResourceModal')); setTimeout(()=>qs('#resourceTitle')?.focus(),60);
   }
@@ -1081,10 +1166,10 @@
 
   async function confirmAddResource(event){
     event?.preventDefault();
-    if(!cloudUser||!cloudSemester||!knowledgeCloudReady)return toast('Library cloud sync is not ready.');
+    if(!cloudUser||!cloudSemester||!knowledgeCloudReady)return toast('Library sync is not ready.');
     const type=qs('#resourceType').value;
     const file=qs('#resourceFile')?.files?.[0]||null;
-    const draft={id:uid('r'),courseId:qs('#resourceCourse').value,topic:qs('#resourceTopic').value.trim()||'General',type,title:qs('#resourceTitle').value.trim(),description:qs('#resourceDescription').value.trim(),url:type==='Link'?qs('#resourceUrl').value.trim():'',sourceType:type==='PDF'?'upload':'manual'};
+    const draft={id:uid('r'),courseId:qs('#resourceCourse').value,topic:canonicalTopicLabelForCourse(qs('#resourceCourse').value,qs('#resourceTopic').value.trim()||'General'),type,title:qs('#resourceTitle').value.trim(),description:qs('#resourceDescription').value.trim(),url:type==='Link'?qs('#resourceUrl').value.trim():'',sourceType:type==='PDF'?'upload':'manual'};
     if(!draft.title)return toast('Resource title is required.');
     if(type==='PDF'&&!file)return toast('Choose a PDF file to upload.');
     const button=qs('#addResourceSubmit'); if(button){button.disabled=true;button.textContent=type==='PDF'?'Uploading…':'Saving…';}
@@ -1097,7 +1182,7 @@
         setUploadStatus('Upload complete. Saving Library metadata…','success');
       }
       const row=await window.studentHubCloud.createResource(cloudUser,cloudSemester,draft,draft.id);
-      state.resources.unshift(rowToResource(row)); save(); closeModals(); render(); updateCloudStatusCard(); toast(type==='PDF'?'PDF uploaded privately to Appwrite Storage.':'Resource saved to Appwrite.');
+      state.resources.unshift(rowToResource(row)); save(); closeModals(); render(); updateCloudStatusCard(); toast(type==='PDF'?'PDF uploaded securely.':'Resource saved.');
     }
     catch(error){
       console.error(error);
@@ -1129,23 +1214,78 @@
     }catch(error){console.error(error);toast('Could not delete this stored resource.');}
   }
 
+  function looksSchedulableCapture(text){
+    return /\b(due|exam|midterm|final|quiz|homework|assignment|project|report|problem set|submit|deadline|lab)\b/i.test(text)||/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today)\b/i.test(text)||/\b20\d{2}-\d{2}-\d{2}\b/.test(text)||/\b\d{1,2}(?::\d{2})?\s*(am|pm)\b/i.test(text);
+  }
+
+  async function captureTextToInbox(text,{navigate=false}={}){
+    text=String(text||'').trim(); if(!text)return;
+    const draft={id:uid('i'),text,created:new Date().toISOString(),processed:false,sourceType:'capture'};
+    try{
+      if(knowledgeCloudReady&&cloudUser&&cloudSemester){const row=await window.studentHubCloud.createInboxItem(cloudUser,cloudSemester,draft,draft.id);state.inbox.unshift(rowToInbox(row));}
+      else state.inbox.unshift(draft);
+      if(navigate)state.route='inbox'; save(); render(); updateCloudStatusCard(); toast(knowledgeCloudReady?'Captured to Inbox.':'Captured locally; sync is temporarily unavailable.');
+    }catch(error){console.error(error);toast('Could not sync the Inbox capture.');}
+  }
+
   async function captureInboxItem(){
     const el=qs('#inboxInput'); const text=el?.value.trim(); if(!text)return;
-    const draft={id:uid('i'),text,created:new Date().toISOString(),processed:false,sourceType:'capture'};
-    try{ if(knowledgeCloudReady&&cloudUser&&cloudSemester){const row=await window.studentHubCloud.createInboxItem(cloudUser,cloudSemester,draft,draft.id);state.inbox.unshift(rowToInbox(row));}else state.inbox.unshift(draft); save(); render(); updateCloudStatusCard(); toast(knowledgeCloudReady?'Captured to cloud Inbox.':'Captured locally; Inbox cloud unavailable.'); }
-    catch(error){console.error(error);toast('Could not capture to Appwrite Inbox.');}
+    await captureTextToInbox(text);
   }
 
   async function archiveInboxItem(id){
     const item=state.inbox.find(x=>x.id===id); if(!item)return;
     const processedAt=new Date().toISOString();
     try{ if(knowledgeCloudReady&&item.cloudId)await window.studentHubCloud.updateInboxItem(item.cloudId,{processed:true,processedAt}); item.processed=true; item.processedAt=processedAt; save(); render(); updateCloudStatusCard(); toast('Inbox item archived.'); }
-    catch(error){console.error(error);toast('Could not archive the cloud Inbox item.');}
+    catch(error){console.error(error);toast('Could not sync the Inbox update.');}
   }
 
   function openModal(modal){ qs('#modalBackdrop').classList.remove('hidden'); modal.classList.remove('hidden'); }
   function closeModals(){ qsa('.modal').forEach(m=>m.classList.add('hidden')); qs('#modalBackdrop').classList.add('hidden'); }
+
+  function openOnboarding(step=state.onboarding?.step||1){
+    if(!state.onboarding) state.onboarding={dismissed:false,step:1};
+    state.onboarding.dismissed=false; state.onboarding.step=clamp(Number(step)||1,1,4); save();
+    renderOnboardingStep();
+    openModal(qs('#onboardingModal'));
+  }
+
+  function renderOnboardingStep(){
+    const modal=qs('#onboardingModal'), content=qs('#onboardingContent'), progress=qs('#onboardingProgress');
+    if(!modal||!content)return;
+    const step=clamp(Number(state.onboarding?.step||1),1,4); if(progress)progress.style.width=`${step*25}%`;
+    if(step===1){
+      content.innerHTML=`<div class="onboarding-step"><span class="onboarding-step-count">1 of 4</span><h3>Set realistic study capacity</h3><p>Student Hub uses this to decide whether a plan is achievable, not just whether calendar space exists.</p><div class="onboarding-fields"><label><span>Semester</span><input id="onboardingSemester" value="${esc(state.semester.name||'My Semester')}" disabled/></label><label><span>Study hours / week</span><input id="onboardingCapacity" type="number" min="1" max="80" step=".5" value="${state.semester.availableMinutesPerWeek/60}"/></label><label><span>Weekday study window</span><div class="inline-time-fields"><input id="onboardingStart" type="time" value="${esc(state.availability?.weekdayStart||'16:00')}"/><span>to</span><input id="onboardingEnd" type="time" value="${esc(state.availability?.weekdayEnd||'21:00')}"/></div></label></div><div class="onboarding-actions"><button class="btn secondary" data-onboarding-skip>Set up later</button><button class="btn primary" id="onboardingSaveCapacity">Continue</button></div></div>`;
+    }else if(step===2){
+      content.innerHTML=`<div class="onboarding-step"><span class="onboarding-step-count">2 of 4</span><h3>Add your academic context</h3><p>A course is the anchor for deadlines, topics, materials and recurring class time.</p>${state.courses.length?`<div class="onboarding-complete-line"><span>✓</span><div><strong>${state.courses.length} course${state.courses.length===1?'':'s'} added</strong><small>${state.courses.slice(0,3).map(c=>esc(c.code)).join(' · ')}</small></div></div>`:`<div class="onboarding-illustration">Course → deadlines → study plan</div>`}<div class="onboarding-actions"><button class="btn secondary" data-onboarding-back="1">Back</button>${state.courses.length?`<button class="btn secondary" id="onboardingAddAnother">+ Add another</button><button class="btn primary" data-onboarding-next="3">Continue</button>`:`<button class="btn primary" id="onboardingAddCourse">Add first course</button>`}</div></div>`;
+    }else if(step===3){
+      const assessmentCount=state.assessments.length;
+      content.innerHTML=`<div class="onboarding-step"><span class="onboarding-step-count">3 of 4</span><h3>Bring in the syllabus</h3><p>Upload the original PDF. Academic AI extracts course details, deadlines and topics into an editable review before anything is imported.</p>${assessmentCount?`<div class="onboarding-complete-line"><span>✓</span><div><strong>${assessmentCount} deadline${assessmentCount===1?'':'s'} ready</strong><small>You can import more syllabi later from Courses.</small></div></div>`:`<div class="onboarding-illustration">PDF → review → deadlines + topics</div>`}<div class="onboarding-actions"><button class="btn secondary" data-onboarding-back="2">Back</button><button class="btn secondary" data-onboarding-next="4">${assessmentCount?'Continue':'Skip for now'}</button><button class="btn primary" id="onboardingImport">Import syllabus</button></div></div>`;
+    }else{
+      const candidates=planningCandidates({limit:20});
+      content.innerHTML=`<div class="onboarding-step"><span class="onboarding-step-count">4 of 4</span><h3>Turn deadlines into a first plan</h3><p>Smart Plan previews study blocks before writing anything. Fixed class times remain untouched.</p><div class="onboarding-summary"><span><strong>${state.courses.length}</strong><small>courses</small></span><span><strong>${state.assessments.length}</strong><small>deadlines</small></span><span><strong>${candidates.length}</strong><small>need planning</small></span></div><div class="onboarding-actions"><button class="btn secondary" data-onboarding-back="3">Back</button><button class="btn secondary" id="onboardingFinish">Go to Today</button>${candidates.length?`<button class="btn primary" id="onboardingPlan">Preview initial plan</button>`:''}</div></div>`;
+    }
+    content.querySelectorAll('[data-onboarding-back]').forEach(b=>b.onclick=()=>{state.onboarding.step=Number(b.dataset.onboardingBack);save();renderOnboardingStep();});
+    content.querySelectorAll('[data-onboarding-next]').forEach(b=>b.onclick=()=>{state.onboarding.step=Number(b.dataset.onboardingNext);save();renderOnboardingStep();});
+    content.querySelectorAll('[data-onboarding-skip]').forEach(b=>b.onclick=dismissOnboarding);
+    content.querySelector('#onboardingSaveCapacity')?.addEventListener('click',()=>{state.semester.availableMinutesPerWeek=Math.round(Number(qs('#onboardingCapacity')?.value||14)*60);state.availability.weekdayStart=qs('#onboardingStart')?.value||'16:00';state.availability.weekdayEnd=qs('#onboardingEnd')?.value||'21:00';state.onboarding.step=2;save();renderOnboardingStep();render();});
+    content.querySelector('#onboardingAddCourse')?.addEventListener('click',()=>{onboardingPendingCourse=true;closeModals();openCourseModal();});
+    content.querySelector('#onboardingAddAnother')?.addEventListener('click',()=>{onboardingPendingCourse=true;closeModals();openCourseModal();});
+    content.querySelector('#onboardingImport')?.addEventListener('click',()=>{state.onboarding.step=4;save();closeModals();openImport();});
+    content.querySelector('#onboardingFinish')?.addEventListener('click',()=>{dismissOnboarding();setRoute('today');});
+    content.querySelector('#onboardingPlan')?.addEventListener('click',()=>{dismissOnboarding();state.route='planner';save();render();setTimeout(()=>openPlannerPreview({all:true}),40);});
+  }
+
+  function dismissOnboarding(){
+    if(!state.onboarding)state.onboarding={}; state.onboarding.dismissed=true; save(); closeModals();
+  }
+
+  function maybeShowOnboarding(){
+    if(!cloudUser||state.onboarding?.dismissed)return;
+    if(!state.courses.length) setTimeout(()=>openOnboarding(state.onboarding?.step||1),120);
+  }
   function openQuickAdd(text='', inboxId=null){
+    if(!state.courses.length){state.route='inbox';save();render();setTimeout(()=>{const el=qs('#inboxInput');if(el){el.value=text||'';el.focus();}},40);toast('Capture it first; add a course when you are ready to turn it into a deadline.');return;}
     quickParsed=null; qs('#quickAddInput').value=text; qs('#quickAddInput').dataset.inboxId=inboxId||''; qs('#parsePreview').classList.add('hidden'); qs('#confirmQuickAdd').classList.add('hidden'); openModal(qs('#quickAddModal')); setTimeout(()=>qs('#quickAddInput').focus(),60);
   }
   function parseNatural(text){
@@ -1179,10 +1319,10 @@
       const inboxId=qs('#quickAddInput').dataset.inboxId;
       if(inboxId){const i=state.inbox.find(x=>x.id===inboxId);if(i){const processedAt=new Date().toISOString();i.processed=true;i.processedAt=processedAt;if(knowledgeCloudReady&&i.cloudId){try{await window.studentHubCloud.updateInboxItem(i.cloudId,{processed:true,processedAt});}catch(error){console.error('Inbox organize update failed:',error);}}}}
       save(); closeModals(); render(); updateCloudStatusCard();
-      toast(academicCloudReady?'Assessment saved to Appwrite and surfaced everywhere.':'Added locally; cloud assessment sync is unavailable.');
+      toast(academicCloudReady?'Deadline added and connected across Student Hub.':'Added locally; cloud assessment sync is unavailable.');
     } catch (error) {
       console.error(error);
-      toast('Could not save the assessment to Appwrite. Check the assessments table setup.');
+      toast('Could not save the deadline. Check Sync diagnostics.');
     }
   }
 
@@ -1210,7 +1350,7 @@
   }
 
   async function uploadSyllabusPdf(){
-    if(!cloudUser||!cloudSemester||!knowledgeCloudReady)return toast('Cloud Library must be ready before uploading a syllabus.');
+    if(!cloudUser||!cloudSemester||!knowledgeCloudReady)return toast('Library sync must be ready before uploading a syllabus.');
     const file=qs('#syllabusFile')?.files?.[0]; if(!file)return toast('Choose a syllabus PDF first.');
     const courseId=qs('#syllabusCourse')?.value||state.courses[0]?.id; if(!courseId)return toast('Create or select a course first.');
     const button=qs('#uploadSyllabusFile'); const status=qs('#syllabusFileStatus');
@@ -1225,7 +1365,7 @@
       const resource=rowToResource(row); state.resources.unshift(resource); save(); render(); updateCloudStatusCard();
       if(status){status.textContent=`Stored privately: ${resource.fileName} · ${formatBytes(resource.fileSize)}`;status.className='upload-status success';}
       qs('#analyzeSyllabusFile').disabled=false; qs('#analyzeSyllabusFile').dataset.resourceId=resource.id;
-      toast('Syllabus PDF stored in Appwrite and ready for Academic AI.');
+      toast('Syllabus PDF uploaded securely and ready for Academic AI.');
     }catch(error){
       console.error(error); if(uploaded?.$id){try{await window.studentHubCloud.deleteAcademicFile(uploaded.$id);}catch(cleanupError){console.warn(cleanupError);}}
       if(status){status.textContent=error?.message||'Upload failed.';status.className='upload-status error';}
@@ -1264,16 +1404,59 @@
   function defaultEffortForType(type){ const t=normalizeAssessmentType(type); return t==='Exam'?300:t==='Project'?360:t==='Quiz'?60:t==='Assignment'?120:60; }
 
 
+  function cleanLabel(value){
+    return String(value||'').trim().replace(/\s+/g,' ');
+  }
+
+  function topicKey(value){
+    const raw=cleanLabel(value).toLocaleLowerCase().replace(/&/g,' and ').replace(/[^a-z0-9]+/g,' ').replace(/\s+/g,' ').trim();
+    const aliases={
+      'vector spaces':'vector space',
+      'vectors spaces':'vector space',
+      'eigen value':'eigenvalue',
+      'eigen values':'eigenvalue',
+      'eigen vector':'eigenvector',
+      'eigen vectors':'eigenvector',
+      'dynamic programmings':'dynamic programming'
+    };
+    return aliases[raw]||raw;
+  }
+
   function dedupeTopics(values){
     const out=[]; const seen=new Set();
     for(const value of (Array.isArray(values)?values:[])){
-      const clean=String(value||'').trim().replace(/\s+/g,' ');
+      const clean=cleanLabel(value);
       if(!clean)continue;
-      const key=clean.toLocaleLowerCase();
-      if(seen.has(key))continue;
+      const key=topicKey(clean);
+      if(!key||seen.has(key))continue;
       seen.add(key); out.push(clean);
     }
     return out;
+  }
+
+  function canonicalTopicLabelForCourse(courseId,value){
+    const clean=cleanLabel(value)||'General';
+    const c=course(courseId);
+    const match=dedupeTopics(c?.topics||[]).find(t=>topicKey(t)===topicKey(clean));
+    return match||clean;
+  }
+
+  function dedupeAssessmentList(items){
+    const out=[];
+    for(const item of (items||[]).slice().sort((a,b)=>new Date(a.due)-new Date(b.due))){
+      const duplicate=out.some(existing=>isLikelyAssessmentDuplicate(existing,item));
+      if(!duplicate) out.push(item);
+    }
+    return out;
+  }
+
+  function canonicalizeStateData(){
+    state.courses=(state.courses||[]).map(c=>({...c,code:cleanLabel(c.code),name:cleanLabel(c.name),teacher:cleanLabel(c.teacher),room:cleanLabel(c.room),schedule:cleanLabel(c.schedule),topics:dedupeTopics(c.topics||[])}));
+    state.assessments=dedupeAssessmentList((state.assessments||[]).map(a=>({...a,title:cleanLabel(a.title)||'Untitled assessment',type:normalizeAssessmentType(a.type),topics:dedupeTopics(a.topics||[])})));
+    state.resources=(state.resources||[]).map(r=>({...r,title:cleanLabel(r.title)||'Untitled resource',topic:canonicalTopicLabelForCourse(r.courseId,r.topic)}));
+    state.review=(state.review||[]).map(r=>({...r,topic:canonicalTopicLabelForCourse(r.courseId,r.topic)}));
+    state.studySessions=(state.studySessions||[]).map(r=>({...r,topic:canonicalTopicLabelForCourse(r.courseId,r.topic)}));
+    return state;
   }
 
   function normalizeAssessmentKey(value){
@@ -1352,7 +1535,7 @@
 
   async function importReviewedAiSyllabus(){
     if(!aiSyllabusResult?.extraction)return;
-    if(!academicCloudReady||!cloudUser||!cloudSemester)return toast('Academic cloud sync must be ready before importing.');
+    if(!academicCloudReady||!cloudUser||!cloudSemester)return toast('Academic sync must be ready before importing.');
     const courseId=qs('#syllabusCourse')?.value; const target=course(courseId); if(!target)return toast('Select a course to update.');
     const button=qs('#importAiSyllabus'); if(button){button.disabled=true;button.textContent='Importing…';}
     try{
@@ -1392,10 +1575,11 @@
       const review=qs('#aiSyllabusReview');
       if(review){
         const plannableForCourse=planningCandidates({courseId:target.id,limit:50}).length;
-        review.innerHTML=`<div class="ai-import-success"><div class="ai-success-icon">✓</div><span class="eyebrow">Import complete</span><h3>${esc(target.name)} is updated</h3><p>${imported} assessment${imported===1?'':'s'} added${skipped?` · ${skipped} duplicate or invalid item${skipped===1?'':'s'} skipped`:''}${addedTopics?` · ${addedTopics} new topic${addedTopics===1?'':'s'} merged`:''}${plannableForCourse?` · ${plannableForCourse} deadline${plannableForCourse===1?' is':'s are'} ready for planning`:''}.</p><div class="button-row ai-success-actions">${plannableForCourse?`<button class="btn secondary" id="planImportedCourse" type="button">Build study plan</button>`:''}<button class="btn primary" id="viewImportedCourse" type="button">View course</button></div></div>`;
+        review.innerHTML=`<div class="ai-import-success"><div class="ai-success-icon">✓</div><span class="eyebrow">Import complete</span><h3>${esc(target.name)} is updated</h3><p>${imported} assessment${imported===1?'':'s'} added${skipped?` · ${skipped} duplicate or invalid item${skipped===1?'':'s'} skipped`:''}${addedTopics?` · ${addedTopics} new topic${addedTopics===1?'':'s'} merged`:''}${plannableForCourse?` · ${plannableForCourse} deadline${plannableForCourse===1?' is':'s are'} ready for planning`:''}.</p><div class="button-row ai-success-actions">${state.onboarding&&!state.onboarding.dismissed&&state.onboarding.step===4?`<button class="btn secondary" id="continueSetupAfterImport" type="button">Continue setup</button>`:''}${plannableForCourse?`<button class="btn secondary" id="planImportedCourse" type="button">Build study plan</button>`:''}<button class="btn primary" id="viewImportedCourse" type="button">View course</button></div></div>`;
         review.classList.remove('hidden');
       }
       qs('#importAiSyllabus')?.classList.add('hidden');
+      qs('#continueSetupAfterImport')?.addEventListener('click',()=>{closeModals();setTimeout(()=>openOnboarding(4),50);});
       qs('#planImportedCourse')?.addEventListener('click',()=>{
         closeModals(); plannerWeekOffset=0; plannerMonthOffset=0; state.route='planner'; save(); render();
         setTimeout(()=>openPlannerPreview({courseId:target.id,all:true}),40);
@@ -1427,16 +1611,30 @@
         imported++;
       }
       save(); closeModals(); render(); updateCloudStatusCard();
-      toast(`Imported ${imported} assessment${imported!==1?'s':''}${skipped?`, ${skipped} duplicate${skipped===1?'':'s'} skipped`:''}${academicCloudReady?' to Appwrite':''}.`);
+      toast(`Imported ${imported} assessment${imported!==1?'s':''}${skipped?`, ${skipped} duplicate${skipped===1?'':'s'} skipped`:''}${academicCloudReady?' and synced':''}.`);
+      if(state.onboarding && !state.onboarding.dismissed && state.onboarding.step===4)setTimeout(()=>openOnboarding(4),120);
     } catch (error) {
       console.error(error);
       save(); render();
-      toast(`Imported ${imported}, then cloud sync failed. Check the assessments table setup.`);
+      toast(`Imported ${imported}, then sync failed. Check Settings → Technical diagnostics.`);
     }
   }
 
   function openSearch(){ openModal(qs('#searchModal')); qs('#searchInput').value=''; renderSearch(''); setTimeout(()=>qs('#searchInput').focus(),60); }
-  function renderSearch(query){ const q=query.trim().toLowerCase(); const items=[]; state.courses.forEach(c=>items.push({type:'Course',icon:'◫',title:c.name,meta:c.code,id:c.id,text:(c.name+' '+c.code+' '+c.topics.join(' ')).toLowerCase()})); state.assessments.forEach(a=>items.push({type:a.type,icon:'✓',title:a.title,meta:courseName(a.courseId)+' · '+humanDue(a.due),id:a.id,text:(a.title+' '+courseName(a.courseId)+' '+(a.topics||[]).join(' ')).toLowerCase()})); state.resources.forEach(r=>items.push({type:r.type,icon:r.type==='PDF'?'▤':'⌁',title:r.title,meta:courseName(r.courseId)+' · '+r.topic,id:r.id,text:(r.title+' '+courseName(r.courseId)+' '+r.topic).toLowerCase()})); const filtered=items.filter(i=>!q||i.text.includes(q)).slice(0,12); qs('#searchResults').innerHTML=filtered.length?filtered.map(i=>`<button class="search-result" data-search-type="${i.type}" data-search-id="${i.id}"><span class="search-result-icon">${i.icon}</span><div><strong>${esc(i.title)}</strong><small>${esc(i.meta)}</small></div><small>${esc(i.type)}</small></button>`).join(''):`<div class="empty-state" style="min-height:160px"><p>No matching semester object.</p></div>`; qsa('.search-result').forEach(b=>b.onclick=()=>{const type=b.dataset.searchType;if(type==='Course'){activeCourseId=b.dataset.searchId;activeCourseTab='overview';state.route='courses';}else if(['PDF','Note','Link'].includes(type)){state.route='library';}else{state.route='planner';}save();closeModals();render();}); }
+  function renderSearch(query){
+    const raw=query.trim(), q=raw.toLowerCase(), items=[];
+    state.courses.forEach(c=>items.push({kind:'course',type:'Course',icon:'◫',title:c.name,meta:c.code,id:c.id,text:(c.name+' '+c.code+' '+(c.topics||[]).join(' ')).toLowerCase()}));
+    state.assessments.forEach(a=>items.push({kind:'assessment',type:a.type,icon:'✓',title:a.title,meta:courseName(a.courseId)+' · '+humanDue(a.due),id:a.id,courseId:a.courseId,text:(a.title+' '+courseName(a.courseId)+' '+(a.topics||[]).join(' ')).toLowerCase()}));
+    state.resources.forEach(r=>items.push({kind:'resource',type:r.type,icon:r.type==='PDF'?'▤':'⌁',title:r.title,meta:courseName(r.courseId)+' · '+r.topic,id:r.id,courseId:r.courseId,topic:r.topic,text:(r.title+' '+courseName(r.courseId)+' '+r.topic).toLowerCase()}));
+    const filtered=items.filter(i=>!q||i.text.includes(q)).slice(0,10);
+    const welcome=!raw?`<div class="command-welcome"><strong>Find or capture anything</strong><small>Search your semester, or type a note/deadline and capture it without choosing where it belongs first.</small><div class="command-suggestions"><button data-command-suggest="midterm">midterm</button><button data-command-suggest="probability">probability</button><button data-command-suggest="lab report Friday 6pm, 2 hours">capture a deadline</button></div></div>`:'';
+    const capture=raw?`<button class="search-result command-capture" data-command-capture="${esc(raw)}"><span class="search-result-icon">＋</span><div><strong>Capture “${esc(raw)}”</strong><small>Send this to Quick Add or Inbox and organize it from context.</small></div><small>Capture</small></button>`:'';
+    const results=filtered.length?filtered.map(i=>`<button class="search-result" data-search-kind="${i.kind}" data-search-id="${i.id}" data-search-course="${i.courseId||''}" data-search-topic="${esc(i.topic||'')}"><span class="search-result-icon">${i.icon}</span><div><strong>${esc(i.title)}</strong><small>${esc(i.meta)}</small></div><small>${esc(i.type)}</small></button>`).join(''):(raw?`<div class="command-no-match"><small>No existing semester item matches this text.</small></div>`:'');
+    qs('#searchResults').innerHTML=welcome+results+capture;
+    qsa('[data-command-suggest]').forEach(b=>b.onclick=()=>{qs('#searchInput').value=b.dataset.commandSuggest;renderSearch(b.dataset.commandSuggest);qs('#searchInput').focus();});
+    qsa('[data-command-capture]').forEach(b=>b.onclick=()=>{const text=b.dataset.commandCapture;closeModals();if(!state.courses.length||!looksSchedulableCapture(text)){captureTextToInbox(text,{navigate:true});return;}setTimeout(()=>openQuickAdd(text),40);});
+    qsa('.search-result[data-search-kind]').forEach(b=>b.onclick=()=>{const kind=b.dataset.searchKind;if(kind==='course'){activeCourseId=b.dataset.searchId;activeCourseTab='overview';state.route='courses';}else if(kind==='resource'){libraryCourseFilter=b.dataset.searchCourse||'all';libraryTopicFilter=b.dataset.searchTopic||'';state.route='library';}else{const a=assessment(b.dataset.searchId);if(a){ensurePlannerPrefs().courseId=a.courseId;ensurePlannerPrefs().lens='deadlines';}state.route='planner';}save();closeModals();render();});
+  }
 
   function humanDue(date){ const d=daysUntil(date); if(d<0)return 'overdue'; if(d<1&&isToday(date))return `today ${fmtTime(date)}`; if(d<2)return 'tomorrow'; if(d<7)return fmtDate(date,{weekday:'short'}); return fmtDate(date,{month:'short',day:'numeric'}); }
   function formatMinutes(m=0){ m=Math.max(0,Math.round(m)); const h=Math.floor(m/60), min=m%60; return h?`${h}h${min?` ${min}m`:''}`:`${min}m`; }
@@ -1491,7 +1689,7 @@
 
 
   function rowToResource(row) {
-    return { id:row.$id, cloudId:row.$id, legacyId:row.legacyId||'', courseId:row.courseId, topic:row.topic||'General', type:row.type||'Note', title:row.title||'Untitled resource', description:row.description||'', url:row.url||'', sourceType:row.sourceType||'library', storageFileId:row.storageFileId||'', fileName:row.fileName||'', mimeType:row.mimeType||'', fileSize:Number(row.fileSize||0), updated:timeAgo(row.$updatedAt||row.$createdAt||new Date()) };
+    return { id:row.$id, cloudId:row.$id, legacyId:row.legacyId||'', courseId:row.courseId, topic:canonicalTopicLabelForCourse(row.courseId,row.topic||'General'), type:row.type||'Note', title:row.title||'Untitled resource', description:row.description||'', url:row.url||'', sourceType:row.sourceType||'library', storageFileId:row.storageFileId||'', fileName:row.fileName||'', mimeType:row.mimeType||'', fileSize:Number(row.fileSize||0), updated:timeAgo(row.$updatedAt||row.$createdAt||new Date()) };
   }
 
   function rowToInbox(row) {
@@ -1499,14 +1697,15 @@
   }
 
   function rowToStudySession(row) {
-    return { id:row.$id, cloudId:row.$id, legacyId:row.legacyId||'', courseId:row.courseId, assessmentId:row.assessmentId||'', topic:row.topic||'General', minutes:Number(row.minutes||0), completedAt:row.completedAt||row.$createdAt, sourceType:row.sourceType||'focus' };
+    return { id:row.$id, cloudId:row.$id, legacyId:row.legacyId||'', courseId:row.courseId, assessmentId:row.assessmentId||'', topic:canonicalTopicLabelForCourse(row.courseId,row.topic||'General'), minutes:Number(row.minutes||0), completedAt:row.completedAt||row.$createdAt, sourceType:row.sourceType||'focus' };
   }
 
   function applyCloudPlannerData(payload) {
     const tasks=Array.isArray(payload?.tasks)?payload.tasks:[];
     const blocks=Array.isArray(payload?.workBlocks)?payload.workBlocks:[];
     state.tasks=tasks.map(rowToTask);
-    const localNonWork=state.events.filter(e=>e.type!=='work');
+    const validCourses=new Set((state.courses||[]).map(c=>c.id));
+    const localNonWork=(state.events||[]).filter(e=>e.type!=='work' && (!e.courseId||validCourses.has(e.courseId)));
     state.events=[...localNonWork,...blocks.filter(row=>row.status!=='done').map(rowToWorkBlock)];
     save(); render();
   }
@@ -1516,14 +1715,16 @@
     state.resources=(Array.isArray(payload?.resources)?payload.resources:[]).map(rowToResource);
     state.inbox=(Array.isArray(payload?.inbox)?payload.inbox:[]).map(rowToInbox);
     state.studySessions=(Array.isArray(payload?.studySessions)?payload.studySessions:[]).map(rowToStudySession).sort((a,b)=>new Date(b.completedAt)-new Date(a.completedAt));
+    canonicalizeStateData();
     save(); render();
   }
 
   function updateCloudStatusCard(){
     const title=qs('#cloudStatusTitle'), text=qs('#cloudStatusText'); if(!title||!text||!cloudUser)return;
-    if(academicCloudReady&&plannerCloudReady&&knowledgeCloudReady){ title.textContent='Full semester cloud synced'; text.textContent=`${state.semester.name}: ${state.courses.length} courses, ${state.assessments.length} assessments, ${(state.tasks||[]).filter(t=>t.status!=='done').length} open tasks, ${state.resources.length} resources, ${state.inbox.filter(i=>!i.processed).length} Inbox items, and ${state.studySessions.length} study sessions.`; }
-    else if(academicCloudReady&&plannerCloudReady){ title.textContent='Academic + planner cloud synced'; text.textContent=`${state.semester.name}: academic and planner data are synced. Library/Inbox/study need resources, inbox_items, and study_sessions tables.`; }
-    else if(academicCloudReady){ title.textContent='Academic cloud synced'; text.textContent=`${state.semester.name}: courses and assessments are synced. Planner cloud still needs tasks/work_blocks setup.`; }
+    const openInbox=(state.inbox||[]).filter(i=>!i.processed).length;
+    if(academicCloudReady&&plannerCloudReady&&knowledgeCloudReady){ title.textContent='Synced'; text.textContent=`${state.semester.name} · ${state.courses.length} courses · ${state.assessments.length} deadlines${openInbox?` · ${openInbox} Inbox`:''}`; }
+    else if(academicCloudReady){ title.textContent='Sync needs attention'; text.textContent='Your academic data is available, but one or more planner or knowledge groups are still local.'; }
+    else { title.textContent='Connected'; text.textContent=`${state.semester.name} · local mode while academic sync initializes.`; }
   }
 
   function remapDependentLocalData(courseMap, assessmentMap) {
@@ -1570,7 +1771,13 @@
 
     remapDependentLocalData(courseMap, assessmentMap);
     state.courses = cloudCourses.map(rowToCourse);
-    state.assessments = cloudAssessments.map(rowToAssessment);
+    state.assessments = dedupeAssessmentList(cloudAssessments.map(rowToAssessment));
+    const validCourses=new Set(state.courses.map(c=>c.id));
+    const validAssessments=new Set(state.assessments.map(a=>a.id));
+    state.events=(state.events||[]).filter(e=>(!e.courseId||validCourses.has(e.courseId))&&(!e.assessmentId||validAssessments.has(e.assessmentId)));
+    state.review=(state.review||[]).filter(r=>!r.courseId||validCourses.has(r.courseId));
+    state.studySessions=(state.studySessions||[]).filter(r=>!r.courseId||validCourses.has(r.courseId));
+    canonicalizeStateData();
     save();
     render();
   }
@@ -1596,7 +1803,7 @@
       applyCloudKnowledgeData(knowledge); knowledgeCloudReady=true;
     }catch(error){ console.error('Knowledge cloud sync failed:',error); knowledgeCloudReady=false; }
 
-    render(); updateCloudStatusCard();
+    render(); updateCloudStatusCard(); maybeShowOnboarding();
     return {academicCloudReady:true,plannerCloudReady,knowledgeCloudReady,courses:state.courses.length,assessments:state.assessments.length,tasks:(state.tasks||[]).length,workBlocks:state.events.filter(e=>e.type==='work').length,resources:state.resources.length,inbox:state.inbox.filter(i=>!i.processed).length,studySessions:state.studySessions.length};
   }
 
@@ -1613,7 +1820,7 @@
   async function confirmAddCourse(event) {
     event?.preventDefault();
     if (!cloudUser || !cloudSemester || !academicCloudReady) {
-      toast('Course cloud sync is not ready. Check the Appwrite courses table.');
+      toast('Course sync is not ready. Check Settings → Technical diagnostics.');
       return;
     }
 
@@ -1646,14 +1853,19 @@
     try {
       const row=await window.studentHubCloud.createCourse(cloudUser,cloudSemester,draft,draft.id);
       state.courses.push(rowToCourse(row));
+      canonicalizeStateData();
+      const resumeOnboarding=onboardingPendingCourse;
+      onboardingPendingCourse=false;
+      if(resumeOnboarding){state.onboarding={...(state.onboarding||{}),dismissed:false,step:3};}
       save();
       closeModals();
       render();
       updateCloudStatusCard();
-      toast(`${draft.name} saved to Appwrite.`);
+      toast(`${draft.name} added.`);
+      if(resumeOnboarding)setTimeout(()=>openOnboarding(3),80);
     } catch (error) {
       console.error(error);
-      toast('Could not save the course. Check your Appwrite courses table.');
+      toast('Could not save the course. Please try again or check Sync diagnostics.');
     } finally {
       if(button){button.disabled=false;button.textContent='Add course';}
     }
@@ -1663,10 +1875,7 @@
     if (!userId) return;
     const nextKey = `${BASE_STORAGE_KEY}.${userId}`;
     if (activeStorageKey !== nextKey) {
-      if (!localStorage.getItem(nextKey)) {
-        const existing = localStorage.getItem(BASE_STORAGE_KEY);
-        if (existing) localStorage.setItem(nextKey, existing);
-      }
+      if (!localStorage.getItem(nextKey)) localStorage.setItem(nextKey,JSON.stringify(emptyUserState(semesterName||'My Semester')));
       activeStorageKey = nextKey;
       state = loadState(activeStorageKey);
       if (!Array.isArray(state.tasks)) state.tasks = [];
@@ -1674,8 +1883,13 @@
       if (!Array.isArray(state.resources)) state.resources = [];
       if (!Array.isArray(state.inbox)) state.inbox = [];
       if (!Array.isArray(state.studySessions)) state.studySessions = [];
+      if (!Array.isArray(state.review)) state.review = [];
+      if (!state.timer)state.timer={seconds:25*60,initialSeconds:25*60,running:false,context:{courseId:'',assessmentId:'',topic:'Focused study'}};
       if (!state.timer.initialSeconds) state.timer.initialSeconds = state.timer.seconds || 25*60;
+      if (!state.availability || typeof state.availability!=='object') state.availability={weekdayStart:'16:00',weekdayEnd:'21:00',weekendStart:'10:00',weekendEnd:'18:00',maxDailyMinutes:180,weekends:true};
+      if (!state.onboarding || typeof state.onboarding!=='object') state.onboarding={dismissed:false,step:1};
       ensurePlannerPrefs();
+      canonicalizeStateData();
     }
     if (semesterName) state.semester.name = semesterName;
     save();
@@ -1704,9 +1918,10 @@
 
   qsa('[data-route]').forEach(b=>b.addEventListener('click',()=>setRoute(b.dataset.route)));
   qs('#themeToggle').addEventListener('click',()=>{state.theme=state.theme==='dark'?'light':'dark';save();render();});
-  qs('#openQuickAdd').addEventListener('click',()=>openQuickAdd());
-  qs('#mobileQuickAdd').addEventListener('click',()=>openQuickAdd());
-  qs('#openSearch').addEventListener('click',openSearch);
+  qs('#openQuickAdd')?.addEventListener('click',()=>openQuickAdd());
+  qs('#mobileQuickAdd')?.addEventListener('click',()=>openQuickAdd());
+  qs('#openSearch')?.addEventListener('click',openSearch);
+  qs('#dismissOnboarding')?.addEventListener('click',dismissOnboarding);
   qs('#modalBackdrop').addEventListener('click',closeModals);
   qsa('.close-modal').forEach(b=>b.addEventListener('click',closeModals));
   qs('#addCourseForm')?.addEventListener('submit',confirmAddCourse);

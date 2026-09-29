@@ -377,9 +377,6 @@
   async function deleteResource(rowId) {
     return tablesDB.deleteRow({ databaseId:CONFIG.databaseId, tableId:CONFIG.resourcesTableId, rowId });
   }
-  async function deleteWorkBlock(rowId) {
-    return tablesDB.deleteRow({ databaseId:CONFIG.databaseId, tableId:CONFIG.workBlocksTableId, rowId });
-  }
 
   async function updateCourse(rowId, patch) { return tablesDB.updateRow({ databaseId:CONFIG.databaseId, tableId:CONFIG.coursesTableId, rowId, data:patch }); }
   async function updateAssessment(rowId, patch) { return tablesDB.updateRow({ databaseId:CONFIG.databaseId, tableId:CONFIG.assessmentsTableId, rowId, data:patch }); }
@@ -388,91 +385,31 @@
   async function updateResource(rowId, patch) { return tablesDB.updateRow({ databaseId:CONFIG.databaseId, tableId:CONFIG.resourcesTableId, rowId, data:patch }); }
   async function updateInboxItem(rowId, patch) { return tablesDB.updateRow({ databaseId:CONFIG.databaseId, tableId:CONFIG.inboxTableId, rowId, data:patch }); }
 
-  async function syncAcademicSeed(user, semester, localCourses=[], localAssessments=[]) {
-    let cloudCourses = await listCourses(semester.$id);
-    const courseIds = new Set(cloudCourses.map(r=>r.$id));
-    const courseLegacy = new Set(cloudCourses.map(r=>r.legacyId).filter(Boolean));
-    for (const course of localCourses) {
-      const localId=String(course.id||'');
-      if (courseIds.has(localId) || courseLegacy.has(localId)) continue;
-      await createCourse(user,semester,course,localId);
-    }
-    cloudCourses = await listCourses(semester.$id);
-    const courseIdMap = new Map();
-    cloudCourses.forEach(r=>{ courseIdMap.set(r.$id,r.$id); if(r.legacyId) courseIdMap.set(r.legacyId,r.$id); });
-
-    let cloudAssessments = await listAssessments(semester.$id);
-    const assessmentIds = new Set(cloudAssessments.map(r=>r.$id));
-    const assessmentLegacy = new Set(cloudAssessments.map(r=>r.legacyId).filter(Boolean));
-    for (const assessment of localAssessments) {
-      const localId=String(assessment.id||'');
-      if (assessmentIds.has(localId) || assessmentLegacy.has(localId)) continue;
-      const cloudCourseId=courseIdMap.get(assessment.courseId)||assessment.courseId;
-      if (cloudCourseId) await createAssessment(user,semester,assessment,cloudCourseId,localId);
-    }
-    cloudAssessments = await listAssessments(semester.$id);
-    return { courses:cloudCourses, assessments:cloudAssessments };
+  async function syncAcademicSeed(user, semester) {
+    // Cloud is the source of truth for signed-in users. New accounts start empty;
+    // sample/demo data must never be copied into a real semester automatically.
+    const [courses, assessments] = await Promise.all([
+      listCourses(semester.$id),
+      listAssessments(semester.$id)
+    ]);
+    return { courses, assessments };
   }
 
-  async function syncPlannerSeed(user, semester, localTasks=[], localWorkBlocks=[]) {
-    let cloudTasks = await listTasks(semester.$id);
-    const taskIds = new Set(cloudTasks.map(r=>r.$id));
-    const taskLegacy = new Set(cloudTasks.map(r=>r.legacyId).filter(Boolean));
-    for (const task of localTasks) {
-      const localId=String(task.id||'');
-      if (taskIds.has(localId) || taskLegacy.has(localId)) continue;
-      await createTask(user,semester,task,localId);
-    }
-    cloudTasks = await listTasks(semester.$id);
-    const taskIdMap = new Map();
-    cloudTasks.forEach(r=>{ taskIdMap.set(r.$id,r.$id); if(r.legacyId) taskIdMap.set(r.legacyId,r.$id); });
-
-    let cloudBlocks = await listWorkBlocks(semester.$id);
-    const blockIds = new Set(cloudBlocks.map(r=>r.$id));
-    const blockLegacy = new Set(cloudBlocks.map(r=>r.legacyId).filter(Boolean));
-    for (const block of localWorkBlocks) {
-      const localId=String(block.id||'');
-      if (blockIds.has(localId) || blockLegacy.has(localId)) continue;
-      const payload={...block,taskId:taskIdMap.get(block.taskId)||block.taskId||''};
-      await createWorkBlock(user,semester,payload,localId);
-    }
-    cloudBlocks = await listWorkBlocks(semester.$id);
-    return { tasks:cloudTasks, workBlocks:cloudBlocks };
+  async function syncPlannerSeed(user, semester) {
+    const [tasks, workBlocks] = await Promise.all([
+      listTasks(semester.$id),
+      listWorkBlocks(semester.$id)
+    ]);
+    return { tasks, workBlocks };
   }
 
-
-  async function syncKnowledgeSeed(user, semester, localResources=[], localInbox=[], localStudySessions=[]) {
-    let cloudResources = await listResources(semester.$id);
-    const resourceIds = new Set(cloudResources.map(r=>r.$id));
-    const resourceLegacy = new Set(cloudResources.map(r=>r.legacyId).filter(Boolean));
-    for (const resource of localResources) {
-      const localId=String(resource.id||'');
-      if (resourceIds.has(localId) || resourceLegacy.has(localId)) continue;
-      await createResource(user,semester,resource,localId);
-    }
-    cloudResources = await listResources(semester.$id);
-
-    let cloudInbox = await listInboxItems(semester.$id);
-    const inboxIds = new Set(cloudInbox.map(r=>r.$id));
-    const inboxLegacy = new Set(cloudInbox.map(r=>r.legacyId).filter(Boolean));
-    for (const item of localInbox) {
-      const localId=String(item.id||'');
-      if (inboxIds.has(localId) || inboxLegacy.has(localId)) continue;
-      await createInboxItem(user,semester,item,localId);
-    }
-    cloudInbox = await listInboxItems(semester.$id);
-
-    let cloudSessions = await listStudySessions(semester.$id);
-    const sessionIds = new Set(cloudSessions.map(r=>r.$id));
-    const sessionLegacy = new Set(cloudSessions.map(r=>r.legacyId).filter(Boolean));
-    for (const session of localStudySessions) {
-      const localId=String(session.id||'');
-      if (sessionIds.has(localId) || sessionLegacy.has(localId)) continue;
-      await createStudySession(user,semester,session,localId);
-    }
-    cloudSessions = await listStudySessions(semester.$id);
-
-    return { resources:cloudResources, inbox:cloudInbox, studySessions:cloudSessions };
+  async function syncKnowledgeSeed(user, semester) {
+    const [resources, inbox, studySessions] = await Promise.all([
+      listResources(semester.$id),
+      listInboxItems(semester.$id),
+      listStudySessions(semester.$id)
+    ]);
+    return { resources, inbox, studySessions };
   }
 
   window.studentHubCloud = Object.freeze({
@@ -480,7 +417,7 @@
     getCurrentUser, signUp, signIn, signOut, listSemesters, ensureSemester,
     listCourses, listAssessments, listTasks, listWorkBlocks, listResources, listInboxItems, listStudySessions,
     createCourse, createAssessment, createTask, createWorkBlock, createResource, createInboxItem, createStudySession,
-    updateCourse, updateAssessment, updateTask, updateWorkBlock, updateResource, updateInboxItem, deleteResource, deleteWorkBlock,
+    updateCourse, updateAssessment, updateTask, updateWorkBlock, updateResource, updateInboxItem, deleteResource,
     uploadAcademicFile, getAcademicFileView, getAcademicFileDownload, deleteAcademicFile,
     callAcademicAI, analyzeSyllabusResource, getPrivateFileUrl, checkAcademicAI,
     syncAcademicSeed, syncPlannerSeed, syncKnowledgeSeed

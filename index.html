@@ -75,7 +75,7 @@
           <div class="auth-form-heading">
             <span class="eyebrow">Create your workspace</span>
             <h2>Start with one secure account</h2>
-            <p>Your first cloud semester will be created automatically.</p>
+            <p>Your first semester workspace will be created automatically.</p>
           </div>
 
           <label class="auth-field">
@@ -141,14 +141,13 @@
       <div class="sidebar-spacer"></div>
 
       <div class="sidebar-card" id="cloudStatusCard">
-        <span class="eyebrow">Cloud account</span>
+        <span class="eyebrow">Account</span>
         <strong id="cloudStatusTitle">Connecting…</strong>
-        <p id="cloudStatusText">Authentication and semester metadata use Appwrite.</p>
+        <p id="cloudStatusText">Your semester stays available when you sign in.</p>
       </div>
 
       <div class="nav-list bottom-nav-list">
-        <button class="nav-item" id="openSearch"><span>⌕</span><span>Search</span><kbd>⌘K</kbd></button>
-        <button class="nav-item" id="openQuickAdd"><span>＋</span><span>Quick add</span><kbd>Q</kbd></button>
+        <button class="nav-item command-launch" id="openSearch"><span>⌕</span><span>Find or add</span><kbd>⌘K</kbd></button>
         <button class="nav-item" data-route="settings"><span>⚙</span><span>Settings</span></button>
       </div>
     </aside>
@@ -205,10 +204,10 @@
 
   <section class="modal hidden wide-modal" id="addCourseModal" role="dialog" aria-modal="true" aria-labelledby="addCourseTitle">
     <div class="modal-header">
-      <div><span class="eyebrow">Cloud course</span><h2 id="addCourseTitle">Add a course</h2></div>
+      <div><span class="eyebrow">Course</span><h2 id="addCourseTitle">Add a course</h2></div>
       <button class="icon-btn close-modal" aria-label="Close">×</button>
     </div>
-    <p class="modal-intro">This course will be stored in Appwrite and become available anywhere you sign in.</p>
+    <p class="modal-intro">This course will sync to your account and become available anywhere you sign in.</p>
     <form id="addCourseForm" class="course-form">
       <div class="course-form-grid">
         <label><span>Course code *</span><input id="courseCode" maxlength="32" required placeholder="CS301" /></label>
@@ -230,10 +229,10 @@
 
   <section class="modal hidden wide-modal" id="addResourceModal" role="dialog" aria-modal="true" aria-labelledby="addResourceTitle">
     <div class="modal-header">
-      <div><span class="eyebrow">Cloud library</span><h2 id="addResourceTitle">Add a resource</h2></div>
+      <div><span class="eyebrow">Library</span><h2 id="addResourceTitle">Add a resource</h2></div>
       <button class="icon-btn close-modal" aria-label="Close">×</button>
     </div>
-    <p class="modal-intro">Notes and links are stored as Library metadata. PDFs are uploaded privately to Appwrite Storage and linked to the same resource record.</p>
+    <p class="modal-intro">Notes, links and PDFs live in one Library. PDFs are uploaded privately and linked to the same course/topic context.</p>
     <form id="addResourceForm" class="course-form">
       <div class="course-form-grid">
         <label><span>Type *</span><select id="resourceType"><option>Note</option><option>Link</option><option>PDF</option></select></label>
@@ -252,11 +251,12 @@
     </form>
   </section>
 
-  <section class="modal search-modal hidden" id="searchModal" role="dialog" aria-modal="true" aria-labelledby="searchTitle">
+  <section class="modal search-modal hidden command-modal" id="searchModal" role="dialog" aria-modal="true" aria-labelledby="searchTitle">
     <div class="search-box-wrap">
-      <span>⌕</span><input id="searchInput" autocomplete="off" placeholder="Search your semester..." aria-label="Search your semester" />
+      <span>⌕</span><input id="searchInput" autocomplete="off" placeholder="Find a course, deadline or material — or type something to capture" aria-label="Find or add anything" />
       <kbd>esc</kbd>
     </div>
+    <div class="command-hint">Search your semester. If it is new information, capture it from the same box.</div>
     <div id="searchResults" class="search-results"></div>
   </section>
 
@@ -265,7 +265,7 @@
       <div><span class="eyebrow">Syllabus intake</span><h2 id="importTitle">Import a syllabus</h2></div>
       <button class="icon-btn close-modal" aria-label="Close">×</button>
     </div>
-    <p class="modal-intro">Upload the original PDF privately to Appwrite, then let the server-side Academic AI Function extract course data with the server-side AI provider. Review every field before importing. The local parser remains below as a fallback.</p>
+    <p class="modal-intro">Upload the original PDF securely, let Academic AI extract course data, then review every field before importing. The local parser remains below as a fallback.</p>
 
     <div class="syllabus-upload-panel">
       <div class="course-form-grid">
@@ -299,11 +299,23 @@
       <div><span class="eyebrow" id="plannerPreviewEyebrow">Smart Plan Preview</span><h2 id="plannerPreviewTitle">Review the proposed study plan</h2></div>
       <button class="icon-btn close-modal" aria-label="Close">×</button>
     </div>
-    <p class="modal-intro">Student Hub proposes changes first. Nothing is written to Appwrite until you press Apply.</p>
+    <p class="modal-intro">Student Hub proposes changes first. Nothing changes until you press Apply.</p>
     <div id="plannerPreviewContent" class="planner-preview-content"></div>
     <div class="modal-actions planner-preview-actions">
       <button class="btn secondary close-modal" type="button">Cancel</button>
       <button class="btn primary" id="applyPlannerPreview" type="button">Apply plan</button>
+    </div>
+  </section>
+
+
+  <section class="modal hidden onboarding-modal" id="onboardingModal" role="dialog" aria-modal="true" aria-labelledby="onboardingTitle">
+    <div class="onboarding-shell">
+      <div class="onboarding-progress" aria-hidden="true"><span id="onboardingProgress"></span></div>
+      <div class="modal-header onboarding-header">
+        <div><span class="eyebrow">Semester setup</span><h2 id="onboardingTitle">Build your semester once</h2></div>
+        <button class="icon-btn" id="dismissOnboarding" aria-label="Set up later">×</button>
+      </div>
+      <div id="onboardingContent" class="onboarding-content"></div>
     </div>
   </section>
 

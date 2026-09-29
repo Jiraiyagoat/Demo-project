@@ -552,7 +552,7 @@ body.dark .auth-card { box-shadow: 0 30px 100px rgba(0,0,0,.4); }
 .modal-divider::before,.modal-divider::after { content:""; height:1px; background:var(--line); flex:1; }
 @media (max-width:680px) { .syllabus-upload-actions { justify-content:stretch; } .syllabus-upload-actions .btn { flex:1; } }
 
-/* v0.7 — Gemini syllabus review */
+/* v0.7.1 — AI syllabus review */
 .ai-syllabus-review{margin-top:16px;border:1px solid var(--border);border-radius:18px;background:var(--surface-2);padding:18px}
 .ai-review-head{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;margin-bottom:16px}
 .ai-review-head h3{margin:4px 0 5px;font-size:18px}.ai-review-head p{margin:0;color:var(--muted);font-size:11px}

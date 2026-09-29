@@ -274,7 +274,7 @@
     const academicLabel = academicCloudReady ? 'Courses + assessments cloud' : 'Academic cloud unavailable';
     const plannerLabel = plannerCloudReady ? 'Tasks + work blocks cloud' : 'Planner cloud unavailable';
     const knowledgeLabel = knowledgeCloudReady ? 'Library + Inbox + study cloud' : 'Knowledge cloud unavailable';
-    return `<div class="settings-grid"><article class="card setting-card"><h3>Weekly study capacity</h3><p>The workload engine compares estimated required work with the time you realistically have.</p><label class="eyebrow" for="capacityInput">Hours / week</label><input id="capacityInput" type="number" min="1" max="80" step=".5" value="${state.semester.availableMinutesPerWeek/60}" style="width:100%;margin-top:7px"/></article><article class="card setting-card"><h3>Cloud academic data</h3><p>Semester, courses, assessments, planner tasks, work blocks, resources, Inbox, and study sessions use Appwrite.</p><span class="pill ${academicCloudReady?'success':''}">${academicLabel}</span> <span class="pill ${plannerCloudReady?'success':''}">${plannerLabel}</span> <span class="pill ${knowledgeCloudReady?'success':''}">${knowledgeLabel}</span></article><article class="card setting-card"><h3>Private academic files</h3><p>PDFs are stored privately in <strong>academic_files</strong>. Short-lived server-generated tokens are used when you open a PDF.</p><span class="pill ${window.studentHubCloud?.storage?'success':''}">${window.studentHubCloud?.storage?'Storage ready':'Storage unavailable'}</span></article><article class="card setting-card"><h3>Academic AI</h3><p>The <strong>academic-ai</strong> Appwrite Function reads your private syllabus as you, sends it to Gemini server-side, and returns reviewable structured data.</p><span class="pill ${window.studentHubCloud?.functions?'success':''}">${window.studentHubCloud?.functions?'Function client ready':'Function unavailable'}</span></article></div>`;
+    return `<div class="settings-grid"><article class="card setting-card"><h3>Weekly study capacity</h3><p>The workload engine compares estimated required work with the time you realistically have.</p><label class="eyebrow" for="capacityInput">Hours / week</label><input id="capacityInput" type="number" min="1" max="80" step=".5" value="${state.semester.availableMinutesPerWeek/60}" style="width:100%;margin-top:7px"/></article><article class="card setting-card"><h3>Cloud academic data</h3><p>Semester, courses, assessments, planner tasks, work blocks, resources, Inbox, and study sessions use Appwrite.</p><span class="pill ${academicCloudReady?'success':''}">${academicLabel}</span> <span class="pill ${plannerCloudReady?'success':''}">${plannerLabel}</span> <span class="pill ${knowledgeCloudReady?'success':''}">${knowledgeLabel}</span></article><article class="card setting-card"><h3>Private academic files</h3><p>PDFs are stored privately in <strong>academic_files</strong>. Short-lived server-generated tokens are used when you open a PDF.</p><span class="pill ${window.studentHubCloud?.storage?'success':''}">${window.studentHubCloud?.storage?'Storage ready':'Storage unavailable'}</span></article><article class="card setting-card"><h3>Academic AI</h3><p>The <strong>academic-ai</strong> Appwrite Function reads your private syllabus as you, sends it to OpenRouter server-side, and returns reviewable structured data.</p><span class="pill ${window.studentHubCloud?.functions?'success':''}">${window.studentHubCloud?.functions?'Function client ready':'Function unavailable'}</span></article></div>`;
   }
 
   function bindPageEvents(){
@@ -600,7 +600,7 @@
       const resource=rowToResource(row); state.resources.unshift(resource); save(); render(); updateCloudStatusCard();
       if(status){status.textContent=`Stored privately: ${resource.fileName} · ${formatBytes(resource.fileSize)}`;status.className='upload-status success';}
       qs('#analyzeSyllabusFile').disabled=false; qs('#analyzeSyllabusFile').dataset.resourceId=resource.id;
-      toast('Syllabus PDF stored in Appwrite and ready for the Gemini function.');
+      toast('Syllabus PDF stored in Appwrite and ready for Academic AI.');
     }catch(error){
       console.error(error); if(uploaded?.$id){try{await window.studentHubCloud.deleteAcademicFile(uploaded.$id);}catch(cleanupError){console.warn(cleanupError);}}
       if(status){status.textContent=error?.message||'Upload failed.';status.className='upload-status error';}
@@ -613,18 +613,18 @@
     if(!resourceId)return toast('Upload a syllabus PDF first.');
     const button=qs('#analyzeSyllabusFile'); const status=qs('#syllabusFileStatus');
     if(button){button.disabled=true;button.textContent='Analyzing…';}
-    if(status){status.textContent='Gemini is reading the private syllabus through the Appwrite Function…';status.className='upload-status active';}
+    if(status){status.textContent='Academic AI is reading the private syllabus through the Appwrite Function…';status.className='upload-status active';}
     try{
       const result=await window.studentHubCloud.analyzeSyllabusResource(resourceId);
       aiSyllabusResult=result;
       showAiSyllabusReview(result);
-      if(status){status.textContent=`Gemini analysis complete · ${result.model||'Flash model'} · review everything before importing.`;status.className='upload-status success';}
+      if(status){status.textContent=`AI analysis complete · ${result.model||'AI model'} · review everything before importing.`;status.className='upload-status success';}
       toast(`Detected ${(result.extraction?.assessments||[]).length} assessment${(result.extraction?.assessments||[]).length===1?'':'s'} for review.`);
     }catch(error){
       console.error(error);
-      if(status){status.textContent=error?.message||'Gemini analysis failed.';status.className='upload-status error';}
+      if(status){status.textContent=error?.message||'AI analysis failed.';status.className='upload-status error';}
       toast(error?.message||'Could not analyze the syllabus. Check the academic-ai Function execution.');
-    }finally{if(button){button.disabled=false;button.textContent='Analyze with Gemini';}}
+    }finally{if(button){button.disabled=false;button.textContent='Analyze with AI';}}
   }
 
   function normalizeAssessmentType(value){
@@ -638,7 +638,7 @@
     const extraction=result?.extraction||{}; const c=extraction.course||{}; const items=Array.isArray(extraction.assessments)?extraction.assessments:[]; const topics=Array.isArray(extraction.topics)?extraction.topics:[]; const warnings=Array.isArray(extraction.warnings)?extraction.warnings:[];
     const current=course(qs('#syllabusCourse')?.value)||state.courses[0]||{};
     const review=qs('#aiSyllabusReview'); if(!review)return;
-    review.innerHTML=`<div class="ai-review-head"><div><span class="eyebrow">Gemini extraction</span><h3>Review before importing</h3><p>AI output is a draft. Edit or uncheck anything that is wrong.</p></div><span class="pill success">${esc(result?.model||'Gemini')}</span></div>
+    review.innerHTML=`<div class="ai-review-head"><div><span class="eyebrow">AI extraction</span><h3>Review before importing</h3><p>AI output is a draft. Edit or uncheck anything that is wrong.</p></div><span class="pill success">${esc(result?.model||'AI model')}</span></div>
       <div class="ai-course-grid">
         <label><span>Course code</span><input id="aiCourseCode" maxlength="32" value="${esc(c.code||current.code||'')}" /></label>
         <label><span>Course name</span><input id="aiCourseName" maxlength="120" value="${esc(c.name||current.name||'')}" /></label>
@@ -648,7 +648,7 @@
       </div>
       <div class="ai-review-section"><div class="ai-review-title"><strong>Assessments</strong><small>${items.length} detected</small></div><div class="ai-assessment-list">${items.length?items.map((a,index)=>{const hasDate=/^\d{4}-\d{2}-\d{2}$/.test(a.dueDate||'');const effort=Number(a.effortMinutes)||defaultEffortForType(a.type);return `<div class="ai-assessment-row"><label class="ai-check"><input type="checkbox" class="ai-assessment-check" data-ai-index="${index}" ${hasDate?'checked':''}/></label><input class="ai-title" data-ai-field="title" data-ai-index="${index}" value="${esc(a.title||'')}"/><select data-ai-field="type" data-ai-index="${index}">${['Assignment','Quiz','Exam','Project','Other'].map(t=>`<option ${normalizeAssessmentType(a.type)===t?'selected':''}>${t}</option>`).join('')}</select><input type="date" data-ai-field="date" data-ai-index="${index}" value="${esc(a.dueDate||'')}"/><input type="time" data-ai-field="time" data-ai-index="${index}" value="${esc(a.dueTime||'23:59')}"/><label class="mini-field"><span>Weight %</span><input type="number" min="0" max="100" step="0.1" data-ai-field="weight" data-ai-index="${index}" value="${Number(a.weight)||0}"/></label><label class="mini-field"><span>Effort min</span><input type="number" min="1" max="10000" step="5" data-ai-field="effort" data-ai-index="${index}" value="${effort}"/></label></div>`}).join(''):`<div class="empty-state compact"><p>No dated assessments were detected.</p></div>`}</div></div>
       <div class="ai-review-section"><div class="ai-review-title"><strong>Topics</strong><small>Select concepts to merge into ${esc(current.name||'the course')}</small></div><div class="ai-topic-list">${topics.length?topics.map((topic,index)=>`<label class="ai-topic"><input type="checkbox" class="ai-topic-check" value="${esc(topic)}" checked/><span>${esc(topic)}</span></label>`).join(''):`<span class="muted-small">No explicit topic list detected.</span>`}</div></div>
-      ${warnings.length?`<div class="ai-warning-box"><strong>Gemini flagged</strong>${warnings.map(w=>`<p>• ${esc(w)}</p>`).join('')}</div>`:''}
+      ${warnings.length?`<div class="ai-warning-box"><strong>AI flagged</strong>${warnings.map(w=>`<p>• ${esc(w)}</p>`).join('')}</div>`:''}
       <p class="ai-source-note">Source: ${esc(result?.sourceFileName||'stored syllabus PDF')} · Nothing is imported until you confirm.</p>`;
     review.classList.remove('hidden'); qs('#importAiSyllabus')?.classList.remove('hidden');
   }
@@ -690,7 +690,7 @@
         state.assessments.push(rowToAssessment(row)); imported++;
       }
       save(); closeModals(); render(); updateCloudStatusCard();
-      toast(`Gemini import complete: ${imported} assessment${imported===1?'':'s'} added${skipped?`, ${skipped} skipped`:''}.`);
+      toast(`AI import complete: ${imported} assessment${imported===1?'':'s'} added${skipped?`, ${skipped} skipped`:''}.`);
     }catch(error){console.error(error);toast(error?.message||'Could not import the reviewed syllabus.');}
     finally{if(button){button.disabled=false;button.textContent='Import reviewed syllabus';}}
   }

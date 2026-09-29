@@ -1,18 +1,25 @@
-# Student Hub Academic AI Function
+# Student Hub Academic AI Function — OpenRouter edition
 
 Function ID: `academic-ai`
 
 Entrypoint: `src/main.js`
 
-This function has no npm dependencies. It uses the Node runtime's built-in `fetch` and Appwrite's execution headers.
+No npm dependencies are required. The function uses Node's built-in `fetch`.
 
-Required function variable:
-- `GEMINI_API_KEY` (Secret)
+## Required variable
 
-Optional:
-- `GEMINI_MODEL` (defaults to `gemini-flash-latest`)
+- `OPENROUTER_API_KEY` — Secret
 
-Required function scope:
-- `tokens.write` (only for short-lived private PDF view links)
+## Optional variable
 
-The syllabus analysis path reads the user's resource row and PDF with the caller's Appwrite JWT, so it respects the user's existing row/file permissions.
+- `OPENROUTER_MODEL` — defaults to `qwen/qwen3.8-27b:free`
+
+## Required Appwrite function scope
+
+- `tokens.write` — used only to create short-lived private PDF view links
+
+## PDF processing
+
+The function sends a private Appwrite PDF to OpenRouter as a base64 PDF input and explicitly uses the `pdf-text` parser. That parser is text-only and free; scanned/image-only PDFs would need an OCR path later.
+
+The syllabus extraction request asks OpenRouter for schema-constrained JSON and keeps the existing Student Hub review-before-import workflow.

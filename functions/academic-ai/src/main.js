@@ -1,7 +1,7 @@
 const DATABASE_ID = 'student_hub';
 const RESOURCES_TABLE_ID = 'resources';
 const BUCKET_ID = 'academic_files';
-const DEFAULT_MODEL = 'gemini-flash-latest';
+const DEFAULT_MODEL = 'qwen/qwen3.8-27b:free';
 
 const jsonHeaders = {
   'Content-Type': 'application/json',
@@ -23,10 +23,11 @@ async function parseJsonResponse(response, label) {
   let data = null;
   try { data = text ? JSON.parse(text) : {}; } catch (_) {}
   if (!response.ok) {
-    const message = data?.message || data?.error?.message || text || `${label} failed with HTTP ${response.status}`;
-    const error = new Error(message);
-    error.status = response.status;
-    throw error;
+    const message = data?.error?.message || data?.message || text || `${label} failed with HTTP ${response.status}`;
+    const err = new Error(message);
+    err.status = response.status;
+    if (data?.error?.code) err.providerCode = data.error.code;
+    throw err;
   }
   return data ?? {};
 }
@@ -80,9 +81,11 @@ async function downloadOwnedPdf({ endpoint, projectId, jwt, resource }) {
 
 const syllabusSchema = {
   type: 'object',
+  additionalProperties: false,
   properties: {
     course: {
       type: 'object',
+      additionalProperties: false,
       properties: {
         code: { type: 'string' },
         name: { type: 'string' },
@@ -96,9 +99,10 @@ const syllabusSchema = {
       type: 'array',
       items: {
         type: 'object',
+        additionalProperties: false,
         properties: {
           title: { type: 'string' },
-          type: { type: 'string' },
+          type: { type: 'string', enum: ['Assignment', 'Quiz', 'Exam', 'Project', 'Other'] },
           dueDate: { type: 'string' },
           dueTime: { type: 'string' },
           weight: { type: 'number' },
@@ -141,10 +145,22 @@ function normalizeExtraction(raw) {
   };
 }
 
-async function analyzeWithGemini(pdfBuffer, resource) {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) throw Object.assign(new Error('GEMINI_API_KEY is not configured on the Appwrite Function.'), { status: 503 });
-  const model = process.env.GEMINI_MODEL || DEFAULT_MODEL;
+function extractOpenRouterText(payload) {
+  const content = payload?.choices?.[0]?.message?.content;
+  if (typeof content === 'string') return content.trim();
+  if (Array.isArray(content)) {
+    return content.map(part => typeof part === 'string' ? part : (part?.text || '')).join('').trim();
+  }
+  return '';
+}
+
+async function analyzeWithOpenRouter(pdfBuffer, resource) {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) {
+    throw Object.assign(new Error('OPENROUTER_API_KEY is not configured on the Appwrite Function.'), { status: 503 });
+  }
+
+  const model = process.env.OPENROUTER_MODEL || DEFAULT_MODEL;
   const prompt = `You are extracting structured academic data from a university syllabus PDF for Student Hub.
 
 Rules:
@@ -163,37 +179,56 @@ Rules:
 
 Source filename: ${cleanText(resource.fileName || resource.title || 'syllabus.pdf', 255)}`;
 
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
     headers: {
+      'Authorization': `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
-      'X-Goog-Api-Key': apiKey
+      'HTTP-Referer': 'https://jiraiyagoat.github.io/Demo-project/',
+      'X-OpenRouter-Title': 'Student Hub'
     },
     body: JSON.stringify({
-      contents: [{
+      model,
+      messages: [{
         role: 'user',
-        parts: [
-          { text: prompt },
-          { inline_data: { mime_type: 'application/pdf', data: pdfBuffer.toString('base64') } }
+        content: [
+          { type: 'text', text: prompt },
+          {
+            type: 'file',
+            file: {
+              filename: cleanText(resource.fileName || resource.title || 'syllabus.pdf', 255),
+              file_data: `data:application/pdf;base64,${pdfBuffer.toString('base64')}`
+            }
+          }
         ]
       }],
-      generationConfig: {
-        temperature: 0.1,
-        responseMimeType: 'application/json',
-        responseSchema: syllabusSchema
-      }
+      plugins: [{ id: 'file-parser', pdf: { engine: 'pdf-text' } }],
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'student_hub_syllabus',
+          strict: true,
+          schema: syllabusSchema
+        }
+      },
+      provider: { require_parameters: true },
+      temperature: 0.1,
+      max_tokens: 5000,
+      stream: false
     })
   });
 
-  const payload = await parseJsonResponse(response, 'Gemini request');
-  const text = payload?.candidates?.[0]?.content?.parts?.map(part => part?.text || '').join('').trim();
-  if (!text) throw Object.assign(new Error('Gemini returned no structured syllabus output.'), { status: 502 });
+  const payload = await parseJsonResponse(response, 'OpenRouter request');
+  const text = extractOpenRouterText(payload);
+  if (!text) throw Object.assign(new Error('OpenRouter returned no structured syllabus output.'), { status: 502 });
+
   let parsed;
   try {
     parsed = JSON.parse(text.replace(/^```json\s*/i, '').replace(/\s*```$/i, ''));
   } catch (_) {
-    throw Object.assign(new Error('Gemini returned an invalid JSON response.'), { status: 502 });
+    throw Object.assign(new Error('OpenRouter returned an invalid JSON response.'), { status: 502 });
   }
+
   return { extraction: normalizeExtraction(parsed), model };
 }
 
@@ -216,23 +251,33 @@ async function createPrivateFileUrl({ endpoint, projectId, serverKey, resource }
 }
 
 export default async ({ req, res, log, error }) => {
-  if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'Method not allowed.' });
+  if (req.method !== 'POST') return res.json({ ok: false, error: 'Method not allowed.' }, 405);
 
   const endpoint = process.env.APPWRITE_FUNCTION_API_ENDPOINT;
   const projectId = process.env.APPWRITE_FUNCTION_PROJECT_ID;
   const userId = getHeader(req.headers, 'x-appwrite-user-id');
   const jwt = getHeader(req.headers, 'x-appwrite-user-jwt');
   const serverKey = getHeader(req.headers, 'x-appwrite-key');
-
-  if (!endpoint || !projectId) return res.status(500).json({ ok: false, error: 'Appwrite function environment is incomplete.' });
-  if (!userId || !jwt) return res.status(401).json({ ok: false, error: 'Sign in before using Academic AI.' });
-
   const body = req.bodyJson || {};
   const action = cleanText(body.action, 40);
 
+  if (!endpoint || !projectId) {
+    return res.json({ ok: false, error: 'Appwrite function environment is incomplete.' }, 500);
+  }
+
   try {
     if (action === 'health') {
-      return res.json({ ok: true, geminiConfigured: Boolean(process.env.GEMINI_API_KEY), model: process.env.GEMINI_MODEL || DEFAULT_MODEL });
+      return res.json({
+        ok: true,
+        provider: 'openrouter',
+        openRouterConfigured: Boolean(process.env.OPENROUTER_API_KEY),
+        model: process.env.OPENROUTER_MODEL || DEFAULT_MODEL,
+        pdfParser: 'pdf-text'
+      });
+    }
+
+    if (!userId || !jwt) {
+      return res.json({ ok: false, error: 'Sign in before using Academic AI.' }, 401);
     }
 
     if (action === 'fileUrl') {
@@ -244,15 +289,24 @@ export default async ({ req, res, log, error }) => {
     if (action === 'analyzeSyllabus') {
       const resource = await getOwnedResource({ endpoint, projectId, jwt, userId, resourceId: body.resourceId });
       const pdf = await downloadOwnedPdf({ endpoint, projectId, jwt, resource });
-      log(`Analyzing syllabus resource ${resource.$id} (${pdf.length} bytes) for user ${userId}.`);
-      const result = await analyzeWithGemini(pdf, resource);
-      return res.json({ ok: true, resourceId: resource.$id, sourceFileName: resource.fileName || resource.title || 'syllabus.pdf', ...result });
+      log(`Analyzing syllabus resource ${resource.$id} (${pdf.length} bytes) for user ${userId} with OpenRouter.`);
+      const result = await analyzeWithOpenRouter(pdf, resource);
+      return res.json({
+        ok: true,
+        provider: 'openrouter',
+        resourceId: resource.$id,
+        sourceFileName: resource.fileName || resource.title || 'syllabus.pdf',
+        ...result
+      });
     }
 
-    return res.status(400).json({ ok: false, error: 'Unknown action.' });
+    return res.json({ ok: false, error: 'Unknown action.' }, 400);
   } catch (err) {
     error?.(err?.stack || String(err));
     const status = Number(err?.status) || 500;
-    return res.status(status >= 400 && status < 600 ? status : 500).json({ ok: false, error: err?.message || 'Academic AI failed.' });
+    return res.json(
+      { ok: false, error: err?.message || 'Academic AI failed.' },
+      status >= 400 && status < 600 ? status : 500
+    );
   }
 };

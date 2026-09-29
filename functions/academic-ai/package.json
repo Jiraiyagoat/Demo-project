@@ -1,7 +1,7 @@
 {
   "name": "student-hub-academic-ai",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "private": true,
   "type": "module",
-  "description": "Student Hub Appwrite Function for private PDF access and Gemini syllabus extraction"
+  "description": "Student Hub Appwrite Function for private PDF access and OpenRouter syllabus extraction"
 }

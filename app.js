@@ -229,9 +229,9 @@
     const ass=state.assessments.filter(a=>a.courseId===id).sort((a,b)=>new Date(a.due)-new Date(b.due));
     const res=state.resources.filter(r=>r.courseId===id);
     let body='';
-    if(activeCourseTab==='overview') body=`<div class="section-grid"><article class="card list-card">${ass.slice(0,5).map(a=>`<div class="list-row"><div><strong>${esc(a.title)}</strong><small>${a.type} · ${formatMinutes(a.remaining)} left</small></div><span class="date-chip">${humanDue(a.due)}</span></div>`).join('')}</article><article class="card pad"><span class="eyebrow">Topics</span><div class="topic-cloud" style="margin-top:13px">${c.topics.map(t=>`<span class="topic-chip">${esc(t)}</span>`).join('')}</div></article></div>`;
+    if(activeCourseTab==='overview') body=`<div class="section-grid"><article class="card list-card">${ass.slice(0,5).map(a=>`<div class="list-row"><div><strong>${esc(a.title)}</strong><small>${a.type} · ${formatMinutes(a.remaining)} left</small></div><span class="date-chip">${humanDue(a.due)}</span></div>`).join('')}</article><article class="card pad"><span class="eyebrow">Topics</span><div class="topic-cloud" style="margin-top:13px">${dedupeTopics(c.topics).map(t=>`<span class="topic-chip">${esc(t)}</span>`).join('')}</div></article></div>`;
     if(activeCourseTab==='work') body=`<article class="card list-card">${ass.map(a=>`<div class="list-row"><div><strong>${esc(a.title)}</strong><small>${a.type} · ${a.status.replace('_',' ')}</small></div><div class="button-row"><span class="date-chip">${humanDue(a.due)}</span><button class="btn secondary" data-plan="${a.id}">Plan</button></div></div>`).join('')}</article>`;
-    if(activeCourseTab==='topics') body=`<div class="course-grid">${c.topics.map(t=>{const count=res.filter(r=>r.topic===t).length; const review=state.review.find(r=>r.courseId===id&&r.topic===t);return `<article class="card pad"><span class="course-dot" style="--course-color:${c.color}"></span><h3 style="margin:15px 0 5px">${esc(t)}</h3><p style="color:var(--muted);font-size:11px">${count} linked resources${review?` · mastery ${review.mastery}%`:''}</p></article>`}).join('')}</div>`;
+    if(activeCourseTab==='topics') body=`<div class="course-grid">${dedupeTopics(c.topics).map(t=>{const count=res.filter(r=>String(r.topic||'').toLowerCase()===String(t||'').toLowerCase()).length; const review=state.review.find(r=>r.courseId===id&&r.topic===t);return `<article class="card pad"><span class="course-dot" style="--course-color:${c.color}"></span><h3 style="margin:15px 0 5px">${esc(t)}</h3><p style="color:var(--muted);font-size:11px">${count} linked resources${review?` · mastery ${review.mastery}%`:''}</p></article>`}).join('')}</div>`;
     if(activeCourseTab==='materials') body=`<div class="resource-grid">${res.map(resourceCard).join('')}</div>`;
     if(activeCourseTab==='grades') body=`<article class="card pad"><span class="eyebrow">Course progress</span><h3 style="font-size:34px;letter-spacing:-.05em;margin:12px 0">${c.grade}%</h3><p style="color:var(--muted);font-size:11px">Target ${c.target}% · demo grade data</p><div class="progress-track" style="--course-color:${c.color};--progress:${c.grade}%"><span></span></div></article>`;
     return `<button class="btn ghost" id="backCourses">← All courses</button><article class="card course-detail-head" style="--course-color:${c.color};margin-top:10px"><div><span class="pill"><span class="course-dot" style="--course-color:${c.color}"></span> ${esc(c.code)}</span><h2>${esc(c.name)}</h2><p>${esc(c.teacher)} · ${esc(c.room)} · ${esc(c.schedule)}</p></div><div><span class="eyebrow">Current grade</span><strong style="display:block;font-size:28px;margin-top:5px">${c.grade}%</strong></div></article><div class="detail-tabs">${['overview','work','topics','materials','grades'].map(t=>`<button class="${activeCourseTab===t?'active':''}" data-course-tab="${t}">${t[0].toUpperCase()+t.slice(1)}</button>`).join('')}</div>${body}`;
@@ -614,6 +614,9 @@
     const button=qs('#analyzeSyllabusFile'); const status=qs('#syllabusFileStatus');
     if(button){button.disabled=true;button.textContent='Analyzing…';}
     if(status){status.textContent='Academic AI is reading the private syllabus through the Appwrite Function…';status.className='upload-status active';}
+    const review=qs('#aiSyllabusReview');
+    if(review){review.innerHTML='<div class="ai-loading-state"><span class="ai-spinner" aria-hidden="true"></span><div><strong>Reading your syllabus</strong><p>Extracting course details, assessments and topics. Free models can take a little longer.</p></div></div>';review.classList.remove('hidden');}
+    qs('#importAiSyllabus')?.classList.add('hidden');
     try{
       const result=await window.studentHubCloud.analyzeSyllabusResource(resourceId);
       aiSyllabusResult=result;
@@ -622,6 +625,7 @@
       toast(`Detected ${(result.extraction?.assessments||[]).length} assessment${(result.extraction?.assessments||[]).length===1?'':'s'} for review.`);
     }catch(error){
       console.error(error);
+      if(review){review.innerHTML='';review.classList.add('hidden');}
       if(status){status.textContent=error?.message||'AI analysis failed.';status.className='upload-status error';}
       toast(error?.message||'Could not analyze the syllabus. Check the academic-ai Function execution.');
     }finally{if(button){button.disabled=false;button.textContent='Analyze with AI';}}
@@ -634,23 +638,91 @@
 
   function defaultEffortForType(type){ const t=normalizeAssessmentType(type); return t==='Exam'?300:t==='Project'?360:t==='Quiz'?60:t==='Assignment'?120:60; }
 
+
+  function dedupeTopics(values){
+    const out=[]; const seen=new Set();
+    for(const value of (Array.isArray(values)?values:[])){
+      const clean=String(value||'').trim().replace(/\s+/g,' ');
+      if(!clean)continue;
+      const key=clean.toLocaleLowerCase();
+      if(seen.has(key))continue;
+      seen.add(key); out.push(clean);
+    }
+    return out;
+  }
+
+  function normalizeAssessmentKey(value){
+    return String(value||'')
+      .toLocaleLowerCase()
+      .replace(/&/g,' and ')
+      .replace(/[^a-z0-9]+/g,' ')
+      .replace(/\s+/g,' ')
+      .trim();
+  }
+
+  function isLikelyAssessmentDuplicate(existing,draft){
+    if(!existing||!draft||existing.courseId!==draft.courseId)return false;
+    const a=normalizeAssessmentKey(existing.title), b=normalizeAssessmentKey(draft.title);
+    if(!a||!b)return false;
+    const ad=new Date(existing.due), bd=new Date(draft.due);
+    const diff=Number.isNaN(ad.getTime())||Number.isNaN(bd.getTime())?Infinity:Math.abs(ad-bd);
+    const sameDay=Number.isFinite(diff)&&isoDate(ad)===isoDate(bd);
+    if(a===b && diff<=3*24*60*60*1000)return true;
+    const closeTitle=(a.length>=6&&b.length>=6&&(a.includes(b)||b.includes(a)));
+    return closeTitle && (sameDay||diff<=18*60*60*1000);
+  }
+
   function showAiSyllabusReview(result){
-    const extraction=result?.extraction||{}; const c=extraction.course||{}; const items=Array.isArray(extraction.assessments)?extraction.assessments:[]; const topics=Array.isArray(extraction.topics)?extraction.topics:[]; const warnings=Array.isArray(extraction.warnings)?extraction.warnings:[];
+    const extraction=result?.extraction||{};
+    const c=extraction.course||{};
+    const items=Array.isArray(extraction.assessments)?extraction.assessments:[];
+    const topics=dedupeTopics(Array.isArray(extraction.topics)?extraction.topics:[]);
+    const warnings=Array.isArray(extraction.warnings)?extraction.warnings:[];
     const current=course(qs('#syllabusCourse')?.value)||state.courses[0]||{};
     const review=qs('#aiSyllabusReview'); if(!review)return;
-    review.innerHTML=`<div class="ai-review-head"><div><span class="eyebrow">AI extraction</span><h3>Review before importing</h3><p>AI output is a draft. Edit or uncheck anything that is wrong.</p></div><span class="pill success">${esc(result?.model||'AI model')}</span></div>
-      <div class="ai-course-grid">
-        <label><span>Course code</span><input id="aiCourseCode" maxlength="32" value="${esc(c.code||current.code||'')}" /></label>
-        <label><span>Course name</span><input id="aiCourseName" maxlength="120" value="${esc(c.name||current.name||'')}" /></label>
-        <label><span>Instructor</span><input id="aiCourseTeacher" maxlength="120" value="${esc(c.instructor||current.teacher||'')}" /></label>
-        <label><span>Room</span><input id="aiCourseRoom" maxlength="80" value="${esc(c.room||current.room||'')}" /></label>
-        <label class="ai-wide"><span>Schedule</span><input id="aiCourseSchedule" maxlength="160" value="${esc(c.schedule||current.schedule||'')}" /></label>
+    review.innerHTML=`
+      <div class="ai-review-head">
+        <div><span class="eyebrow">AI extraction</span><h3>Review before importing</h3><p>Every detected field remains editable. Uncheck anything you do not want to import.</p></div>
+        <span class="pill success ai-model-pill">${esc(result?.model||'AI model')}</span>
       </div>
-      <div class="ai-review-section"><div class="ai-review-title"><strong>Assessments</strong><small>${items.length} detected</small></div><div class="ai-assessment-list">${items.length?items.map((a,index)=>{const hasDate=/^\d{4}-\d{2}-\d{2}$/.test(a.dueDate||'');const effort=Number(a.effortMinutes)||defaultEffortForType(a.type);return `<div class="ai-assessment-row"><label class="ai-check"><input type="checkbox" class="ai-assessment-check" data-ai-index="${index}" ${hasDate?'checked':''}/></label><input class="ai-title" data-ai-field="title" data-ai-index="${index}" value="${esc(a.title||'')}"/><select data-ai-field="type" data-ai-index="${index}">${['Assignment','Quiz','Exam','Project','Other'].map(t=>`<option ${normalizeAssessmentType(a.type)===t?'selected':''}>${t}</option>`).join('')}</select><input type="date" data-ai-field="date" data-ai-index="${index}" value="${esc(a.dueDate||'')}"/><input type="time" data-ai-field="time" data-ai-index="${index}" value="${esc(a.dueTime||'23:59')}"/><label class="mini-field"><span>Weight %</span><input type="number" min="0" max="100" step="0.1" data-ai-field="weight" data-ai-index="${index}" value="${Number(a.weight)||0}"/></label><label class="mini-field"><span>Effort min</span><input type="number" min="1" max="10000" step="5" data-ai-field="effort" data-ai-index="${index}" value="${effort}"/></label></div>`}).join(''):`<div class="empty-state compact"><p>No dated assessments were detected.</p></div>`}</div></div>
-      <div class="ai-review-section"><div class="ai-review-title"><strong>Topics</strong><small>Select concepts to merge into ${esc(current.name||'the course')}</small></div><div class="ai-topic-list">${topics.length?topics.map((topic,index)=>`<label class="ai-topic"><input type="checkbox" class="ai-topic-check" value="${esc(topic)}" checked/><span>${esc(topic)}</span></label>`).join(''):`<span class="muted-small">No explicit topic list detected.</span>`}</div></div>
+      <section class="ai-review-card ai-course-card">
+        <div class="ai-section-kicker"><div><strong>Course details</strong><small>These values will update the selected course.</small></div></div>
+        <div class="ai-course-grid">
+          <label><span>Course code</span><input id="aiCourseCode" maxlength="32" value="${esc(c.code||current.code||'')}" /></label>
+          <label class="ai-course-name"><span>Course name</span><input id="aiCourseName" maxlength="120" value="${esc(c.name||current.name||'')}" /></label>
+          <label><span>Instructor</span><input id="aiCourseTeacher" maxlength="120" value="${esc(c.instructor||current.teacher||'')}" /></label>
+          <label><span>Room</span><input id="aiCourseRoom" maxlength="80" value="${esc(c.room||current.room||'')}" /></label>
+          <label class="ai-wide"><span>Schedule</span><input id="aiCourseSchedule" maxlength="160" value="${esc(c.schedule||current.schedule||'')}" /></label>
+        </div>
+      </section>
+      <section class="ai-review-section">
+        <div class="ai-review-title"><div><strong>Assessments</strong><small>Check dates, weights and effort estimates before importing.</small></div><span class="pill">${items.length} detected</span></div>
+        <div class="ai-assessment-list">${items.length?items.map((a,index)=>{
+          const hasDate=/^\d{4}-\d{2}-\d{2}$/.test(a.dueDate||'');
+          const effort=Number(a.effortMinutes)||defaultEffortForType(a.type);
+          return `<article class="ai-assessment-card">
+            <label class="ai-assessment-toggle"><input type="checkbox" class="ai-assessment-check" data-ai-index="${index}" ${hasDate?'checked':''}/><span>Include</span></label>
+            <div class="ai-assessment-identity">
+              <label class="ai-field ai-title-field"><span>Assessment</span><input class="ai-title" data-ai-field="title" data-ai-index="${index}" value="${esc(a.title||'')}"/></label>
+              <label class="ai-field ai-type-field"><span>Type</span><select data-ai-field="type" data-ai-index="${index}">${['Assignment','Quiz','Exam','Project','Other'].map(t=>`<option ${normalizeAssessmentType(a.type)===t?'selected':''}>${t}</option>`).join('')}</select></label>
+            </div>
+            <div class="ai-assessment-fields">
+              <label class="ai-field"><span>Due date</span><input type="date" data-ai-field="date" data-ai-index="${index}" value="${esc(a.dueDate||'')}"/></label>
+              <label class="ai-field"><span>Time</span><input type="time" data-ai-field="time" data-ai-index="${index}" value="${esc(a.dueTime||'23:59')}"/></label>
+              <label class="ai-field"><span>Weight</span><div class="ai-unit-input"><input type="number" min="0" max="100" step="0.1" data-ai-field="weight" data-ai-index="${index}" value="${Number(a.weight)||0}"/><span>%</span></div></label>
+              <label class="ai-field"><span>Effort</span><div class="ai-unit-input"><input type="number" min="1" max="10000" step="5" data-ai-field="effort" data-ai-index="${index}" value="${effort}"/><span>min</span></div></label>
+            </div>
+          </article>`;
+        }).join(''):`<div class="empty-state compact"><p>No dated assessments were detected.</p></div>`}</div>
+      </section>
+      <section class="ai-review-section ai-topics-section">
+        <div class="ai-review-title"><div><strong>Topics</strong><small>Selected concepts will be merged into ${esc(current.name||'the course')} without case-only duplicates.</small></div><span class="pill">${topics.length} detected</span></div>
+        <div class="ai-topic-list">${topics.length?topics.map(topic=>`<label class="ai-topic"><input type="checkbox" class="ai-topic-check" value="${esc(topic)}" checked/><span>${esc(topic)}</span></label>`).join(''):`<span class="muted-small">No explicit topic list detected.</span>`}</div>
+      </section>
       ${warnings.length?`<div class="ai-warning-box"><strong>AI flagged</strong>${warnings.map(w=>`<p>• ${esc(w)}</p>`).join('')}</div>`:''}
       <p class="ai-source-note">Source: ${esc(result?.sourceFileName||'stored syllabus PDF')} · Nothing is imported until you confirm.</p>`;
     review.classList.remove('hidden'); qs('#importAiSyllabus')?.classList.remove('hidden');
+    review.scrollIntoView({behavior:'smooth',block:'nearest'});
   }
 
   async function importReviewedAiSyllabus(){
@@ -660,7 +732,8 @@
     const button=qs('#importAiSyllabus'); if(button){button.disabled=true;button.textContent='Importing…';}
     try{
       const selectedTopics=qsa('.ai-topic-check:checked').map(x=>x.value.trim()).filter(Boolean);
-      const mergedTopics=[...new Set([...(target.topics||[]),...selectedTopics])].slice(0,40);
+      const originalTopics=dedupeTopics(target.topics||[]);
+      const mergedTopics=dedupeTopics([...originalTopics,...selectedTopics]).slice(0,40);
       const patch={
         code:qs('#aiCourseCode')?.value.trim()||target.code,
         name:qs('#aiCourseName')?.value.trim()||target.name,
@@ -683,14 +756,22 @@
         const effort=Math.max(1,Math.round(Number(qs(`[data-ai-field="effort"][data-ai-index="${index}"]`)?.value||defaultEffortForType(type))));
         if(!title||!date){skipped++;continue;}
         const dueLocal=new Date(`${date}T${time||'23:59'}:00`); if(Number.isNaN(dueLocal.getTime())){skipped++;continue;}
-        const duplicate=state.assessments.some(a=>a.courseId===target.id&&a.title.trim().toLowerCase()===title.toLowerCase()&&isoDate(a.due)===date);
+        const draft={id:uid('a'),courseId:target.id,title,type,due:dueLocal.toISOString(),effort,remaining:effort,status:'not_started',weight:Number.isFinite(weight)?weight:0,topics:dedupeTopics(Array.isArray(src.topics)?src.topics:[]),sourceType:'syllabus_ai'};
+        const duplicate=state.assessments.some(a=>isLikelyAssessmentDuplicate(a,draft));
         if(duplicate){skipped++;continue;}
-        const draft={id:uid('a'),courseId:target.id,title,type,due:dueLocal.toISOString(),effort,remaining:effort,status:'not_started',weight:Number.isFinite(weight)?weight:0,topics:Array.isArray(src.topics)?src.topics:[],sourceType:'syllabus_ai'};
         const row=await window.studentHubCloud.createAssessment(cloudUser,cloudSemester,draft,target.id,draft.id);
         state.assessments.push(rowToAssessment(row)); imported++;
       }
-      save(); closeModals(); render(); updateCloudStatusCard();
-      toast(`AI import complete: ${imported} assessment${imported===1?'':'s'} added${skipped?`, ${skipped} skipped`:''}.`);
+      save(); render(); updateCloudStatusCard();
+      const addedTopics=Math.max(0,mergedTopics.length-originalTopics.length);
+      const review=qs('#aiSyllabusReview');
+      if(review){
+        review.innerHTML=`<div class="ai-import-success"><div class="ai-success-icon">✓</div><span class="eyebrow">Import complete</span><h3>${esc(target.name)} is updated</h3><p>${imported} assessment${imported===1?'':'s'} added${skipped?` · ${skipped} duplicate or invalid item${skipped===1?'':'s'} skipped`:''}${addedTopics?` · ${addedTopics} new topic${addedTopics===1?'':'s'} merged`:''}.</p><button class="btn primary" id="viewImportedCourse" type="button">View course</button></div>`;
+        review.classList.remove('hidden');
+      }
+      qs('#importAiSyllabus')?.classList.add('hidden');
+      qs('#viewImportedCourse')?.addEventListener('click',()=>{activeCourseId=target.id;activeCourseTab='overview';closeModals();state.route='courses';save();render();});
+      toast(`AI import complete: ${imported} added${skipped?`, ${skipped} skipped`:''}.`);
     }catch(error){console.error(error);toast(error?.message||'Could not import the reviewed syllabus.');}
     finally{if(button){button.disabled=false;button.textContent='Import reviewed syllabus';}}
   }
@@ -702,10 +783,11 @@
   function showSyllabusPreview(items){ qs('#syllabusPreview').innerHTML=`<div class="detected-list">${items.map(i=>`<div class="detected-item"><strong>${esc(i.title)}</strong><br><span style="color:var(--muted)">${esc(courseName(i.courseId))} · ${i.type} · ${fmtDate(i.due,{month:'short',day:'numeric'})} ${fmtTime(i.due)} · ${formatMinutes(i.effort)}</span></div>`).join('')}</div><p style="margin:10px 2px 0;color:var(--muted);font-size:10px">Detected locally. Production would preserve page/source provenance and confidence for every item.</p>`; qs('#syllabusPreview').classList.remove('hidden'); qs('#confirmSyllabus').classList.toggle('hidden',!items.length); }
   async function confirmSyllabus(){
     if (!syllabusParsed.length) return;
-    let imported=0;
+    let imported=0, skipped=0;
     try {
       for (const p of syllabusParsed) {
         const draft={id:uid('a'),courseId:p.courseId,title:p.title,type:p.type,due:p.due,effort:p.effort,remaining:p.effort,status:'not_started',weight:5,topics:[],sourceType:'syllabus_local'};
+        if(state.assessments.some(a=>isLikelyAssessmentDuplicate(a,draft))){skipped++;continue;}
         if (academicCloudReady && cloudUser && cloudSemester) {
           const row=await window.studentHubCloud.createAssessment(cloudUser,cloudSemester,draft,draft.courseId,draft.id);
           state.assessments.push(rowToAssessment(row));
@@ -715,7 +797,7 @@
         imported++;
       }
       save(); closeModals(); render(); updateCloudStatusCard();
-      toast(`Imported ${imported} assessment${imported!==1?'s':''}${academicCloudReady?' to Appwrite':''}.`);
+      toast(`Imported ${imported} assessment${imported!==1?'s':''}${skipped?`, ${skipped} duplicate${skipped===1?'':'s'} skipped`:''}${academicCloudReady?' to Appwrite':''}.`);
     } catch (error) {
       console.error(error);
       save(); render();
@@ -747,7 +829,7 @@
       schedule: row.schedule || '',
       grade: Number(row.grade || 0),
       target: Number(row.target || 0),
-      topics: Array.isArray(row.topics) ? row.topics : []
+      topics: dedupeTopics(Array.isArray(row.topics) ? row.topics : [])
     };
   }
 
@@ -764,7 +846,7 @@
       remaining: Number(row.remaining ?? row.effort ?? 0),
       status: row.status || 'not_started',
       weight: Number(row.weight || 0),
-      topics: Array.isArray(row.topics) ? row.topics : [],
+      topics: dedupeTopics(Array.isArray(row.topics) ? row.topics : []),
       sourceType: row.sourceType || 'manual'
     };
   }
@@ -905,10 +987,10 @@
       return;
     }
 
-    const topics = qs('#courseTopics').value
+    const topics = dedupeTopics(qs('#courseTopics').value
       .split(',')
       .map(value=>value.trim())
-      .filter(Boolean);
+      .filter(Boolean));
 
     const draft = {
       id: uid('c'),

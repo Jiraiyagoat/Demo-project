@@ -1,7 +1,7 @@
 const DATABASE_ID = 'student_hub';
 const RESOURCES_TABLE_ID = 'resources';
 const BUCKET_ID = 'academic_files';
-const DEFAULT_MODEL = 'qwen/qwen3.8-27b:free';
+const DEFAULT_MODEL = 'openrouter/free';
 
 const jsonHeaders = {
   'Content-Type': 'application/json',
@@ -23,10 +23,14 @@ async function parseJsonResponse(response, label) {
   let data = null;
   try { data = text ? JSON.parse(text) : {}; } catch (_) {}
   if (!response.ok) {
-    const message = data?.error?.message || data?.message || text || `${label} failed with HTTP ${response.status}`;
-    const err = new Error(message);
+    const providerName = cleanText(data?.error?.metadata?.provider_name || '', 80);
+    const raw = cleanText(data?.error?.metadata?.raw || '', 500);
+    const baseMessage = data?.error?.message || data?.message || text || `${label} failed with HTTP ${response.status}`;
+    const detail = [baseMessage, providerName ? `Provider: ${providerName}` : '', raw].filter(Boolean).join(' | ');
+    const err = new Error(detail);
     err.status = response.status;
     if (data?.error?.code) err.providerCode = data.error.code;
+    err.retryAfter = response.headers.get('retry-after') || '';
     throw err;
   }
   return data ?? {};
@@ -211,7 +215,6 @@ Source filename: ${cleanText(resource.fileName || resource.title || 'syllabus.pd
           schema: syllabusSchema
         }
       },
-      provider: { require_parameters: true },
       temperature: 0.1,
       max_tokens: 5000,
       stream: false
@@ -304,8 +307,19 @@ export default async ({ req, res, log, error }) => {
   } catch (err) {
     error?.(err?.stack || String(err));
     const status = Number(err?.status) || 500;
+    if (status === 429) {
+      return res.json({
+        ok: false,
+        error: 'The free AI route is temporarily rate-limited. Wait about a minute and try again.',
+        detail: cleanText(err?.message || '', 600),
+        retryAfter: cleanText(err?.retryAfter || '', 30)
+      }, 429);
+    }
     return res.json(
-      { ok: false, error: err?.message || 'Academic AI failed.' },
+      {
+        ok: false,
+        error: err?.message || 'Academic AI failed.'
+      },
       status >= 400 && status < 600 ? status : 500
     );
   }

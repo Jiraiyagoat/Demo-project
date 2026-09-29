@@ -135,7 +135,11 @@
   ensurePlannerPrefs();
   canonicalizeStateData();
 
-  function save(){ localStorage.setItem(activeStorageKey, JSON.stringify(state)); updateBadges(); }
+  function save(){
+    try { localStorage.setItem(activeStorageKey, JSON.stringify(state)); }
+    catch(error){ console.error('Local save failed:',error); setTimeout(()=>toast('Could not save local changes. Export a backup from Settings if this continues.'),0); }
+    updateBadges();
+  }
   function course(id){ return state.courses.find(c=>c.id===id); }
   function assessment(id){ return state.assessments.find(a=>a.id===id); }
   function courseName(id){ return course(id)?.name || 'Unassigned'; }
@@ -800,6 +804,48 @@
     render();
   }
 
+  const MATERIAL_STOP_WORDS=new Set(['a','an','and','are','as','at','be','before','by','complete','course','do','for','from','in','into','is','it','main','of','on','or','review','submit','task','the','this','to','work','with']);
+  function materialTokens(...parts){
+    return [...new Set(parts.flatMap(part=>String(part||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').split(/\s+/)).filter(token=>token.length>2&&!MATERIAL_STOP_WORDS.has(token)))];
+  }
+  function overlapTokens(a,b){ const right=new Set(b); return a.filter(token=>right.has(token)); }
+  function resourceMatchForStudy(resource,{contextCourse,contextAssessment,contextTask,contextTopic}){
+    if(!resource||resource.courseId!==contextCourse?.id)return {resource,score:-1,reasons:[]};
+    const reasons=[];
+    let score=10;
+    const resourceTopic=topicKey(resource.topic);
+    const primaryTopic=topicKey(contextTopic);
+    const assessmentTopics=new Set((contextAssessment?.topics||[]).map(topicKey).filter(Boolean));
+    if(resourceTopic&&primaryTopic&&resourceTopic===primaryTopic){score+=100;reasons.push('Exact topic');}
+    else if(resourceTopic&&assessmentTopics.has(resourceTopic)){score+=78;reasons.push('Deadline topic');}
+    const resourceTextTokens=materialTokens(resource.title,resource.description,resource.topic);
+    const deadlineTokens=materialTokens(contextAssessment?.title,...(contextAssessment?.topics||[]));
+    const taskTokens=materialTokens(contextTask?.title);
+    const deadlineHits=overlapTokens(deadlineTokens,resourceTextTokens);
+    const taskHits=overlapTokens(taskTokens,resourceTextTokens);
+    if(deadlineHits.length){score+=Math.min(54,deadlineHits.length*18);reasons.push(`Matches deadline${deadlineHits.length>1?' context':''}`);}
+    if(taskHits.length){score+=Math.min(36,taskHits.length*18);reasons.push('Matches task');}
+    const normalizedDescription=normalizeAssessmentKey(resource.description||'');
+    const normalizedAssessment=normalizeAssessmentKey(contextAssessment?.title||'');
+    if(normalizedAssessment&&normalizedDescription.includes(normalizedAssessment)){score+=50;reasons.push('Linked by description');}
+    if(resourceTopic==='syllabus'||resource.sourceType==='syllabus_upload'){score+=4;reasons.push('Course reference');}
+    if(contextTopic==='Focused study'&&!contextAssessment&&!contextTask){score=Math.max(score,40);if(!reasons.length)reasons.push('Same course');}
+    return {resource,score,reasons:[...new Set(reasons)]};
+  }
+  function studyMaterialRecommendations(context){
+    const ranked=(state.resources||[]).filter(r=>r.courseId===context.contextCourse?.id).map(r=>resourceMatchForStudy(r,context)).sort((a,b)=>b.score-a.score||String(a.resource.title||'').localeCompare(String(b.resource.title||'')));
+    const recommended=ranked.filter(item=>item.score>=38).slice(0,4);
+    const used=new Set(recommended.map(item=>item.resource.id));
+    const fallback=ranked.filter(item=>!used.has(item.resource.id)).slice(0,4);
+    return {recommended,fallback,total:ranked.length};
+  }
+  function studyMaterialButton(item,secondary=false){
+    const r=item.resource;
+    const icon=r.type==='PDF'?'▤':r.type==='Link'?'↗':'✎';
+    const reason=item.reasons?.slice(0,2).join(' · ')||(secondary?'Same course':'Suggested');
+    return `<button class="session-material ${secondary?'secondary-match':''}" data-open-library-resource="${esc(r.id)}"><span>${icon}</span><div><strong>${esc(r.title)}</strong><small>${esc(r.topic||'General')} · ${esc(r.type)}</small><em>${esc(reason)}</em></div></button>`;
+  }
+
   function renderStudy(){
     const t=state.timer;
     if(!state.courses.length){
@@ -812,17 +858,7 @@
     if(!t.context.courseId&&contextCourse) t.context.courseId=contextCourse.id;
     const contextTopic=t.context.topic||contextAssessment?.topics?.[0]||'Focused study';
     const displayTitle=contextTask?`${contextAssessment?.title||'Task'} · ${contextTask.title}`:(contextAssessment?.title||contextTopic);
-    const studyTopics=new Set([contextTopic,...(contextAssessment?.topics||[])].map(topicKey).filter(Boolean));
-    const courseResources=state.resources.filter(r=>r.courseId===contextCourse?.id);
-    const matchingResources=courseResources.map((r,index)=>{
-      const key=topicKey(r.topic);
-      let score=0;
-      if(contextTopic==='Focused study') score+=20;
-      if(key&&key===topicKey(contextTopic)) score+=100;
-      else if(key&&studyTopics.has(key)) score+=70;
-      if(String(r.topic||'').toLowerCase()==='syllabus'||r.sourceType==='syllabus_upload') score+=8;
-      return {r,score,index};
-    }).sort((a,b)=>b.score-a.score||a.index-b.index).slice(0,5).map(x=>x.r);
+    const materialMatches=studyMaterialRecommendations({contextCourse,contextAssessment,contextTask,contextTopic});
     const recent=[...(state.studySessions||[])].sort((a,b)=>new Date(b.completedAt)-new Date(a.completedAt)).slice(0,6);
     const totalMinutes=(state.studySessions||[]).reduce((sum,x)=>sum+Number(x.minutes||0),0);
     const duration=Math.max(5,Math.round((t.initialSeconds||t.seconds||25*60)/60));
@@ -848,10 +884,20 @@
       <div class="button-row focus-actions"><button class="btn primary" id="timerToggle">${t.running?'Pause':'Start'}</button><button class="btn secondary" id="timerReset">Reset</button><button class="btn secondary" id="finishSession">Finish & save</button></div>
       <p class="quiet-note">${focusMode?'Distraction-free mode is active. Press Esc or use Exit full screen when you are done.':contextAssessment?'Finish & save records the session, then asks what work is still left so Planner can adapt.':'Actual study time is recorded when you finish and can improve future session sizing.'}</p>
     </article>
-    <article class="card session-materials"><div class="section-head compact"><div><span class="eyebrow">For this session</span><h2>Materials</h2></div><button class="btn ghost compact-btn" data-open-library-course="${contextCourse?.id||''}">Open Library</button></div>${matchingResources.length?`<div class="session-material-list">${matchingResources.map(r=>`<button class="session-material" data-open-library-resource="${r.id}"><span>${r.type==='PDF'?'▤':r.type==='Link'?'↗':'✎'}</span><div><strong>${esc(r.title)}</strong><small>${esc(r.topic||'General')} · ${esc(r.type)}</small></div></button>`).join('')}</div>`:`<div class="empty-state compact"><p>${targetValue==='free'?'Choose a course context or keep the session timer-only.':'No material is linked to this topic yet.'}</p><button class="btn secondary compact-btn" data-add-resource-course="${contextCourse?.id||''}">+ Add material</button></div>`}</article></div>
+    <article class="card session-materials"><div class="section-head compact"><div><span class="eyebrow">For this session</span><h2>Materials</h2><p class="material-match-copy">Ranked from course, topic, deadline and task context — not just upload order.</p></div><button class="btn ghost compact-btn" data-open-library-course="${contextCourse?.id||''}">Open Library</button></div>${materialMatches.recommended.length?`<div class="material-match-label"><span>Recommended</span><small>${materialMatches.recommended.length} strong match${materialMatches.recommended.length===1?'':'es'}</small></div><div class="session-material-list">${materialMatches.recommended.map(item=>studyMaterialButton(item)).join('')}</div>${materialMatches.fallback.length?`<details class="material-fallback"><summary>More from ${esc(contextCourse?.name||'this course')} <span>${materialMatches.fallback.length}</span></summary><div class="session-material-list">${materialMatches.fallback.map(item=>studyMaterialButton(item,true)).join('')}</div></details>`:''}`:materialMatches.fallback.length?`<div class="material-context-note"><strong>No strong contextual match yet</strong><small>These are still from ${esc(contextCourse?.name||'the selected course')}. Add a topic or clearer description to improve matching.</small></div><div class="session-material-list">${materialMatches.fallback.map(item=>studyMaterialButton(item,true)).join('')}</div>`:`<div class="empty-state compact"><p>${targetValue==='free'?'No materials are saved for this course yet.':'No material is linked closely enough to this study context yet.'}</p><button class="btn secondary compact-btn" data-add-resource-course="${contextCourse?.id||''}">+ Add material</button></div>`}</article></div>
     <div class="section-head"><div><h2>Due for review</h2><p>Review prompts stay secondary to the session you chose to do now.</p></div></div><div class="review-queue">${state.review.length?state.review.map(reviewRow).join(''):`<div class="card empty-state compact"><p>No review items are due.</p></div>`}</div><div class="section-head"><div><h2>Study history</h2><p>${formatMinutes(totalMinutes)} recorded across ${(state.studySessions||[]).length} session${(state.studySessions||[]).length===1?'':'s'}.</p></div><span class="pill ${knowledgeCloudReady?'success':''}">${knowledgeCloudReady?'Synced':'Local'}</span></div><article class="card session-history">${recent.length?recent.map(studySessionRow).join(''):`<div class="empty-state"><div class="empty-icon">◎</div><h3>No completed focus sessions yet</h3><p>Finish a timer and the session will appear here.</p></div>`}</article>`;
   }
   function studySessionRow(session){ const c=course(session.courseId), a=assessment(session.assessmentId); const label=a?.title||session.topic||'Study'; const context=a&&session.topic&&topicKey(session.topic)!==topicKey(a.title)?`${c?.name||'Course'} · ${session.topic}`:(c?.name||'Course'); return `<div class="session-row"><div><strong><span class="course-dot" style="--course-color:${c?.color||'var(--accent)'}"></span> ${esc(label)}</strong><small>${esc(context)} · ${fmtDate(session.completedAt,{month:'short',day:'numeric'})} ${fmtTime(session.completedAt)}</small></div><span class="pill">${formatMinutes(session.minutes)}</span></div>`; }
+
+  function startStudyFromResource(resourceId){
+    const r=(state.resources||[]).find(item=>item.id===resourceId); if(!r)return;
+    if(state.timer.running)return toast('Pause the current timer before switching study context.');
+    state.timer.context={courseId:r.courseId||'',assessmentId:'',taskId:'',topic:topicKey(r.topic)==='syllabus'?'Focused study':(r.topic||'Focused study')};
+    state.timer.running=false;
+    if(!state.timer.initialSeconds)state.timer.initialSeconds=25*60;
+    if(!state.timer.seconds||state.timer.seconds<1)state.timer.seconds=state.timer.initialSeconds;
+    save(); setRoute('study');
+  }
 
   function renderLibrary(){
     const filtered=state.resources.filter(r=>(libraryCourseFilter==='all'||r.courseId===libraryCourseFilter)&&(!libraryTopicFilter||topicKey(r.topic)===topicKey(libraryTopicFilter)));
@@ -866,7 +912,8 @@
       : r.url ? `<a class="resource-open" href="${esc(r.url)}" target="_blank" rel="noopener">Open ↗</a>` : '';
     const fileMeta=r.storageFileId ? `<div class="file-meta">${esc(r.fileName||'Stored PDF')} · ${formatBytes(r.fileSize||0)}</div>` : '';
     const remove=r.storageFileId ? `<button class="resource-delete" data-delete-resource="${esc(r.id)}">Delete</button>` : '';
-    return `<article class="card resource-card" data-resource-text="${esc((r.title+' '+r.topic+' '+courseName(r.courseId)+' '+r.description+' '+(r.fileName||'')).toLowerCase())}"><div><div class="resource-icon">${icon}</div><h3>${esc(r.title)}</h3><p>${esc(r.description)}</p>${fileMeta}<div class="resource-actions">${action}${remove}</div></div><footer><span><span class="course-dot" style="--course-color:${c?.color||'var(--accent)'}"></span> ${esc(c?.name||'Unassigned')} · ${esc(r.topic||'General')}</span><span>${esc(r.updated||'Synced')}</span></footer></article>`;
+    const studyAction=r.courseId?`<button class="resource-study" data-study-resource="${esc(r.id)}">Study this</button>`:'';
+    return `<article class="card resource-card" data-resource-text="${esc((r.title+' '+r.topic+' '+courseName(r.courseId)+' '+r.description+' '+(r.fileName||'')).toLowerCase())}"><div><div class="resource-icon">${icon}</div><h3>${esc(r.title)}</h3><p>${esc(r.description)}</p>${fileMeta}<div class="resource-actions">${action}${studyAction}${remove}</div></div><footer><span><span class="course-dot" style="--course-color:${c?.color||'var(--accent)'}"></span> ${esc(c?.name||'Unassigned')} · ${esc(r.topic||'General')}</span><span>${esc(r.updated||'Synced')}</span></footer></article>`;
   }
 
   function renderInbox(){
@@ -874,16 +921,78 @@
     return `<div class="inbox-compose"><textarea id="inboxInput" placeholder="Drop something here without organizing it first..."></textarea><button class="btn primary" id="captureInbox">Capture</button></div><div class="section-head"><div><h2>Process later</h2><p>Inbox is temporary staging. Turn each capture into a deadline, material, note, or archive it.</p></div><span class="pill ${knowledgeCloudReady?'success':''}">${knowledgeCloudReady?'Synced':'Local'}</span></div><div class="inbox-list">${items.length?items.map(i=>`<article class="card inbox-item"><div><p>${esc(i.text)}</p><small>Captured ${timeAgo(i.created)}</small></div><div class="button-row"><button class="btn primary" data-organize="${i.id}">Process</button><button class="btn ghost" data-archive="${i.id}">Archive</button></div></article>`).join(''):`<div class="card empty-state"><div class="empty-icon">✓</div><h3>Inbox zero</h3><p>Everything captured has been processed.</p></div>`}</div>`;
   }
 
+  function hasValidDate(value){ const d=new Date(value); return !Number.isNaN(d.getTime()); }
+  function duplicateIdCount(items){ const seen=new Set(); let duplicates=0; for(const item of items||[]){ if(!item?.id)continue; if(seen.has(item.id))duplicates++; else seen.add(item.id); } return duplicates; }
+  function dataHealthReport(){
+    const courseIds=new Set((state.courses||[]).map(c=>c.id).filter(Boolean));
+    const assessmentIds=new Set((state.assessments||[]).map(a=>a.id).filter(Boolean));
+    const taskIds=new Set((state.tasks||[]).map(t=>t.id).filter(Boolean));
+    const issues=[];
+    const add=(kind,label,count,repairable=false)=>{if(count>0)issues.push({kind,label,count,repairable});};
+    add('links','Deadlines without a valid course',(state.assessments||[]).filter(a=>!courseIds.has(a.courseId)).length,false);
+    add('links','Planner tasks without a valid deadline',(state.tasks||[]).filter(t=>!assessmentIds.has(t.assessmentId)).length,true);
+    add('links','Adaptive study blocks without a valid deadline',(state.events||[]).filter(e=>e.type==='work'&&String(e.sourceType||'').startsWith('adaptive_planner')&&e.assessmentId&&!assessmentIds.has(e.assessmentId)).length,true);
+    add('links','Materials without a valid course',(state.resources||[]).filter(r=>r.courseId&&!courseIds.has(r.courseId)).length,false);
+    add('links','Study sessions without a valid course',(state.studySessions||[]).filter(row=>row.courseId&&!courseIds.has(row.courseId)).length,false);
+    add('dates','Deadlines with invalid dates',(state.assessments||[]).filter(a=>!hasValidDate(a.due)).length,false);
+    add('dates','Calendar blocks with invalid dates',(state.events||[]).filter(e=>!hasValidDate(e.start)||!hasValidDate(e.end)||new Date(e.end)<=new Date(e.start)).length,false);
+    add('values','Negative remaining estimates',(state.assessments||[]).filter(a=>Number(a.remaining)<0).length+(state.tasks||[]).filter(t=>Number(t.remaining)<0).length,true);
+    const duplicateIds=duplicateIdCount(state.courses)+duplicateIdCount(state.assessments)+duplicateIdCount(state.tasks)+duplicateIdCount(state.events)+duplicateIdCount(state.resources)+duplicateIdCount(state.studySessions);
+    add('ids','Duplicate record IDs',duplicateIds,true);
+    const repairable=issues.reduce((sum,item)=>sum+(item.repairable?item.count:0),0);
+    return {issues,repairable,total:issues.reduce((sum,item)=>sum+item.count,0),clean:issues.length===0};
+  }
+  function dedupeById(items){
+    const seen=new Set(); const out=[];
+    for(const item of (items||[]).slice().reverse()){
+      const key=item?.id||item?.cloudId||item?.legacyId||'';
+      if(key&&seen.has(key))continue;
+      if(key)seen.add(key);
+      out.push(item);
+    }
+    return out.reverse();
+  }
+  function repairDataHealth(){
+    const before=dataHealthReport();
+    state.courses=dedupeById(state.courses||[]);
+    state.assessments=dedupeById(state.assessments||[]).map(a=>({...a,remaining:Math.max(0,Number(a.remaining??a.effort??0)),effort:Math.max(0,Number(a.effort??a.remaining??0))}));
+    const assessmentIds=new Set(state.assessments.map(a=>a.id));
+    state.tasks=dedupeById(state.tasks||[]).filter(t=>assessmentIds.has(t.assessmentId)||t.cloudId).map(t=>({...t,remaining:Math.max(0,Number(t.remaining??t.estimate??0)),estimate:Math.max(0,Number(t.estimate??t.remaining??0))}));
+    const taskIds=new Set(state.tasks.map(t=>t.id));
+    state.events=dedupeById(state.events||[]).filter(e=>!(e.type==='work'&&String(e.sourceType||'').startsWith('adaptive_planner')&&e.assessmentId&&!assessmentIds.has(e.assessmentId)&&!e.cloudId)).map(e=>e.taskId&&!taskIds.has(e.taskId)&&String(e.sourceType||'').startsWith('adaptive_planner')&&!e.cloudId?{...e,taskId:''}:e);
+    state.resources=dedupeById(state.resources||[]);
+    state.studySessions=dedupeById(state.studySessions||[]);
+    canonicalizeStateData();
+    save();
+    const after=dataHealthReport();
+    render();
+    toast(after.clean?'Data health check passed.':before.repairable>0?'Safe repairs applied. Remaining items need review.':'No automatic repair was needed.');
+  }
+  function exportStudentHubBackup(){
+    try{
+      const payload={exportedAt:new Date().toISOString(),app:'Student Hub',formatVersion:1,userScoped:Boolean(cloudUser),state};
+      const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement('a');
+      a.href=url; a.download=`student-hub-backup-${isoDate(new Date())}.json`; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(()=>URL.revokeObjectURL(url),1000); toast('Backup downloaded.');
+    }catch(error){console.error('Backup export failed:',error);toast('Could not export backup.');}
+  }
+
   function renderSettings(){
     const availability=state.availability||{};
     const syncReady=academicCloudReady&&plannerCloudReady&&knowledgeCloudReady;
     const uniqueTopics=new Set(state.courses.flatMap(c=>dedupeTopics(c.topics||[]).map(topicKey))).size;
+    const health=dataHealthReport();
+    const healthTitle=health.clean?'Data model looks healthy':`${health.total} data issue${health.total===1?'':'s'} found`;
+    const healthCopy=health.clean?'Course, deadline, task, calendar, material and study-session references are internally consistent.':health.repairable?`${health.repairable} issue${health.repairable===1?' is':'s are'} safe to repair automatically. Anything else is left untouched for review.`:'The remaining issues need manual review; Student Hub will not delete uncertain records.';
     return `<div class="settings-grid">
       <article class="card setting-card availability-card"><span class="eyebrow">Planning assumptions</span><h3>Study availability</h3><p>Make capacity personal so overload warnings mean something.</p><div class="setting-field-grid"><label><span>Hours / week</span><input id="capacityInput" type="number" min="1" max="80" step=".5" value="${state.semester.availableMinutesPerWeek/60}"/></label><label><span>Max / day (min)</span><input id="maxDailyInput" type="number" min="30" max="600" step="15" value="${availability.maxDailyMinutes||180}"/></label><label><span>Weekday start</span><input id="weekdayStartInput" type="time" value="${esc(availability.weekdayStart||'16:00')}"/></label><label><span>Weekday end</span><input id="weekdayEndInput" type="time" value="${esc(availability.weekdayEnd||'21:00')}"/></label><label><span>Weekend start</span><input id="weekendStartInput" type="time" value="${esc(availability.weekendStart||'10:00')}"/></label><label><span>Weekend end</span><input id="weekendEndInput" type="time" value="${esc(availability.weekendEnd||'18:00')}"/></label></div><label class="setting-check"><input id="weekendsInput" type="checkbox" ${availability.weekends!==false?'checked':''}/><span>Allow weekend study blocks</span></label><small>Smart Plan still respects existing events and deadlines.</small></article>
       <article class="card setting-card"><span class="eyebrow">Academic data</span><h3>Canonical semester model</h3><p>Course → deadline → task → study block is the single planning chain. Materials and topics attach to that context instead of becoming separate systems.</p><div class="settings-metrics"><span><strong>${state.courses.length}</strong><small>courses</small></span><span><strong>${state.assessments.length}</strong><small>deadlines</small></span><span><strong>${uniqueTopics}</strong><small>topics</small></span></div><span class="pill success">Duplicate naming normalized</span></article>
+      <article class="card setting-card data-health-card"><span class="eyebrow">Reliability</span><h3>${esc(healthTitle)}</h3><p>${esc(healthCopy)}</p>${health.issues.length?`<div class="health-issue-list">${health.issues.slice(0,4).map(item=>`<span><strong>${item.count}</strong>${esc(item.label)}</span>`).join('')}${health.issues.length>4?`<small>+ ${health.issues.length-4} more issue type${health.issues.length-4===1?'':'s'}</small>`:''}</div>`:`<div class="health-clean-line"><span>✓</span><small>No orphaned planner links, invalid dates or duplicate record IDs detected.</small></div>`}<div class="button-row settings-actions"><button class="btn secondary" id="runDataHealth">${health.repairable?'Run safe repair':'Run consistency check'}</button><button class="btn ghost" id="exportBackup">Export backup</button></div></article>
       <article class="card setting-card"><span class="eyebrow">Sync</span><h3>${syncReady?'Everything important is synced':'Some data is local'}</h3><p>${syncReady?'Courses, deadlines, plans, materials, Inbox and study history are available across signed-in devices.':'Student Hub will keep working locally where possible, but one or more cloud data groups need attention.'}</p><span class="pill ${syncReady?'success':'warning'}">${syncReady?'Synced':'Check setup'}</span></article>
       <article class="card setting-card"><span class="eyebrow">Onboarding</span><h3>Semester setup</h3><p>Replay the setup guide without deleting existing data.</p><button class="btn secondary" id="restartOnboarding">Open setup guide</button></article>
-    </div><details class="card technical-settings"><summary><span>Technical diagnostics</span><small>Appwrite storage, database and Academic AI status</small></summary><div class="technical-grid"><div><strong>Academic data</strong><small>${academicCloudReady?'ready':'needs attention'}</small></div><div><strong>Planner data</strong><small>${plannerCloudReady?'ready':'needs attention'}</small></div><div><strong>Knowledge data</strong><small>${knowledgeCloudReady?'ready':'needs attention'}</small></div><div><strong>Private files</strong><small>${window.studentHubCloud?.storage?'ready':'needs attention'}</small></div><div><strong>Academic AI</strong><small>${window.studentHubCloud?.functions?'client ready':'needs attention'}</small></div></div></details>`;
+    </div><details class="card technical-settings"><summary><span>Technical diagnostics</span><small>Appwrite storage, database, Academic AI and local data integrity</small></summary><div class="technical-grid"><div><strong>Academic data</strong><small>${academicCloudReady?'ready':'needs attention'}</small></div><div><strong>Planner data</strong><small>${plannerCloudReady?'ready':'needs attention'}</small></div><div><strong>Knowledge data</strong><small>${knowledgeCloudReady?'ready':'needs attention'}</small></div><div><strong>Private files</strong><small>${window.studentHubCloud?.storage?'ready':'needs attention'}</small></div><div><strong>Academic AI</strong><small>${window.studentHubCloud?.functions?'client ready':'needs attention'}</small></div><div><strong>Data integrity</strong><small>${health.clean?'healthy':`${health.total} issue${health.total===1?'':'s'}`}</small></div></div></details>`;
   }
 
   function bindPageEvents(){
@@ -937,6 +1046,7 @@
     qsa('[data-add-resource-course]').forEach(b=>b.onclick=()=>{resourceContextCourseId=b.dataset.addResourceCourse||'';openResourceModal();});
     qsa('[data-open-library-resource]').forEach(b=>b.onclick=()=>{const r=state.resources.find(x=>x.id===b.dataset.openLibraryResource);if(!r)return;if(r.storageFileId)return openStoredResource(r.id);if(r.url){window.open(r.url,'_blank','noopener');return;}libraryCourseFilter=r.courseId||'all';libraryTopicFilter=r.topic||'';setRoute('library');});
     qsa('[data-open-resource]').forEach(b=>b.onclick=()=>openStoredResource(b.dataset.openResource));
+    qsa('[data-study-resource]').forEach(b=>b.onclick=()=>startStudyFromResource(b.dataset.studyResource));
     qsa('[data-delete-resource]').forEach(b=>b.onclick=()=>deleteStoredResource(b.dataset.deleteResource));
     qs('#captureInbox')?.addEventListener('click',captureInboxItem);
     qsa('[data-organize]').forEach(b=>b.onclick=()=>{const i=state.inbox.find(x=>x.id===b.dataset.organize); if(!i)return; openQuickAdd(i.text, i.id);});
@@ -948,6 +1058,8 @@
     qs('#weekendStartInput')?.addEventListener('change',e=>{state.availability.weekendStart=e.target.value||'10:00';save();});
     qs('#weekendEndInput')?.addEventListener('change',e=>{state.availability.weekendEnd=e.target.value||'18:00';save();});
     qs('#weekendsInput')?.addEventListener('change',e=>{state.availability.weekends=e.target.checked;save();});
+    qs('#runDataHealth')?.addEventListener('click',repairDataHealth);
+    qs('#exportBackup')?.addEventListener('click',exportStudentHubBackup);
     qs('#restartOnboarding')?.addEventListener('click',()=>{state.onboarding={dismissed:false,step:1};save();openOnboarding(1);});
   }
 

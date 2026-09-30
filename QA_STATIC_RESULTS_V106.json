@@ -1,0 +1,166 @@
+{
+  "passed": 32,
+  "total": 32,
+  "checks": [
+    [
+      "app.js syntax",
+      true,
+      ""
+    ],
+    [
+      "appwrite.js syntax",
+      true,
+      ""
+    ],
+    [
+      "auth.js syntax",
+      true,
+      ""
+    ],
+    [
+      "sw.js syntax",
+      true,
+      ""
+    ],
+    [
+      "manifest.json parses",
+      true,
+      ""
+    ],
+    [
+      "QA_SAMPLE_DATA_V106.json parses",
+      true,
+      ""
+    ],
+    [
+      "index ref exists: manifest.json",
+      true,
+      ""
+    ],
+    [
+      "index ref exists: styles.css",
+      true,
+      ""
+    ],
+    [
+      "index ref exists: appwrite.js",
+      true,
+      ""
+    ],
+    [
+      "index ref exists: app.js",
+      true,
+      ""
+    ],
+    [
+      "index ref exists: auth.js",
+      true,
+      ""
+    ],
+    [
+      "Appwrite config contains student_hub",
+      true,
+      ""
+    ],
+    [
+      "Appwrite config contains semesters",
+      true,
+      ""
+    ],
+    [
+      "Appwrite config contains courses",
+      true,
+      ""
+    ],
+    [
+      "Appwrite config contains assessments",
+      true,
+      ""
+    ],
+    [
+      "Appwrite config contains tasks",
+      true,
+      ""
+    ],
+    [
+      "Appwrite config contains work_blocks",
+      true,
+      ""
+    ],
+    [
+      "Appwrite config contains resources",
+      true,
+      ""
+    ],
+    [
+      "Appwrite config contains inbox_items",
+      true,
+      ""
+    ],
+    [
+      "Appwrite config contains study_sessions",
+      true,
+      ""
+    ],
+    [
+      "Appwrite config contains academic_files",
+      true,
+      ""
+    ],
+    [
+      "Appwrite config contains academic-ai",
+      true,
+      ""
+    ],
+    [
+      "v1.0.6 runtime contains semesterPlanningSnapshot",
+      true,
+      ""
+    ],
+    [
+      "v1.0.6 runtime contains canonicalSlippedWork",
+      true,
+      ""
+    ],
+    [
+      "v1.0.6 runtime contains assistantGroup",
+      true,
+      ""
+    ],
+    [
+      "v1.0.6 runtime contains diagnostics:()=>",
+      true,
+      ""
+    ],
+    [
+      "Service worker cache is v10-6",
+      true,
+      ""
+    ],
+    [
+      "Runtime omits stale phrase: hackathon",
+      true,
+      ""
+    ],
+    [
+      "Runtime omits stale phrase: giving a live demo",
+      true,
+      ""
+    ],
+    [
+      "Runtime omits stale phrase: before a demo",
+      true,
+      ""
+    ],
+    [
+      "QA reset has no cloud SDK call",
+      true,
+      ""
+    ],
+    [
+      "QA reset only writes base fallback key",
+      true,
+      ""
+    ]
+  ]
+}

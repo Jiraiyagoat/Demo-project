@@ -1,0 +1,142 @@
+{
+  "passed": 26,
+  "total": 26,
+  "results": [
+    {
+      "name": "App API available",
+      "ok": true,
+      "value": true
+    },
+    {
+      "name": "Today renders",
+      "ok": true,
+      "value": true
+    },
+    {
+      "name": "Canonical fixture has 3 slipped blocks",
+      "ok": true,
+      "value": true
+    },
+    {
+      "name": "Today slipped count matches canonical",
+      "ok": true,
+      "value": true
+    },
+    {
+      "name": "Action Center opens",
+      "ok": true,
+      "value": true
+    },
+    {
+      "name": "Action Center groups render",
+      "ok": true,
+      "value": true
+    },
+    {
+      "name": "Action Center slipped count matches canonical",
+      "ok": true,
+      "value": true
+    },
+    {
+      "name": "No duplicate assistant keys",
+      "ok": true,
+      "value": true
+    },
+    {
+      "name": "Planner route renders",
+      "ok": true,
+      "value": true
+    },
+    {
+      "name": "Courses route renders",
+      "ok": true,
+      "value": true
+    },
+    {
+      "name": "Study route renders",
+      "ok": true,
+      "value": true
+    },
+    {
+      "name": "Library route renders",
+      "ok": true,
+      "value": true
+    },
+    {
+      "name": "Inbox route renders",
+      "ok": true,
+      "value": true
+    },
+    {
+      "name": "Settings route renders",
+      "ok": true,
+      "value": true
+    },
+    {
+      "name": "Data health clean fixture",
+      "ok": true,
+      "value": true
+    },
+    {
+      "name": "Planner weekday labels forced to English despite Russian browser locale",
+      "ok": true,
+      "value": true
+    },
+    {
+      "name": "Planner density toggles rendering class",
+      "ok": true,
+      "value": {
+        "before": "week-grid redesigned compact",
+        "after": "week-grid redesigned comfortable"
+      }
+    },
+    {
+      "name": "Planner next-week navigation changes period",
+      "ok": true,
+      "value": {
+        "before": "28 Sept – 4 Oct\nJump to today",
+        "after": "5 Oct – 11 Oct\nJump to today"
+      }
+    },
+    {
+      "name": "No visible generic error banner after route smoke",
+      "ok": true,
+      "value": true
+    },
+    {
+      "name": "Tablet Today has no horizontal document overflow",
+      "ok": true,
+      "value": true
+    },
+    {
+      "name": "Tablet Study controls remain in viewport",
+      "ok": true,
+      "value": true
+    },
+    {
+      "name": "Mobile Today has no horizontal document overflow",
+      "ok": true,
+      "value": true
+    },
+    {
+      "name": "Mobile Study controls remain in viewport",
+      "ok": true,
+      "value": true
+    },
+    {
+      "name": "Action Center toggle has accessible label",
+      "ok": true,
+      "value": true
+    },
+    {
+      "name": "Escape closes Action Center",
+      "ok": true,
+      "value": true
+    },
+    {
+      "name": "No unexpected local JavaScript console errors",
+      "ok": true,
+      "value": []
+    }
+  ]
+}

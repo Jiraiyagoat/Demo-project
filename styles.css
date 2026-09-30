@@ -932,3 +932,13 @@ body.focus-mode .focus-mode-button{display:inline-flex!important}
 
 @media(max-width:980px){.today-assist-strip{grid-template-columns:1fr auto}.assist-strip-items{grid-column:1/-1;order:3}.assistant-panel{right:14px;top:70px}}
 @media(max-width:680px){.assistant-panel{right:10px;top:64px;width:calc(100vw - 20px);max-height:calc(100vh - 86px);border-radius:18px}.assistant-item{grid-template-columns:1fr}.assistant-item .btn{justify-self:start}.today-assist-strip{grid-template-columns:1fr auto}.assist-strip-items{display:grid}.assist-strip-chip{max-width:none}}
+
+/* v1.0.6 — Action Center hierarchy */
+.assistant-panel-content{gap:12px}
+.assistant-group{display:grid;gap:8px}
+.assistant-group+ .assistant-group{padding-top:3px;border-top:1px solid var(--line)}
+.assistant-group>header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:2px 2px 0;color:var(--muted);font-size:8px;text-transform:uppercase;letter-spacing:.08em}
+.assistant-group>header strong{font-size:8px;color:var(--text);letter-spacing:.07em}
+.assistant-group>header span{min-width:19px;height:19px;padding:0 6px;border-radius:999px;display:grid;place-items:center;background:var(--panel-soft);border:1px solid var(--line);font-size:7px;font-weight:850;letter-spacing:0;color:var(--muted)}
+.assistant-group[data-assistant-group="now"]>header strong{color:var(--danger)}
+.assistant-group[data-assistant-group="attention"]>header strong{color:var(--warning)}

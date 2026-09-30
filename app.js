@@ -167,6 +167,37 @@
   }
   function requiredMinutesThisWeek(){ return requiredMinutesForWeek(weekStart()); }
 
+  // Canonical planning snapshot used by Today, Planner and the Action Center.
+  // Keeping these calculations in one place prevents different surfaces from
+  // reporting different counts for the same semester state.
+  function activeAssessmentIdSet(){
+    return new Set((state.assessments||[]).filter(a=>a.status!=='done').map(a=>a.id).filter(Boolean));
+  }
+  function canonicalSlippedWork(now=new Date()){
+    const activeIds=activeAssessmentIdSet();
+    return (state.events||[])
+      .filter(e=>e.type==='work'&&e.status!=='done'&&hasValidDate(e.end)&&new Date(e.end)<now)
+      .filter(e=>!e.assessmentId||activeIds.has(e.assessmentId))
+      .sort((a,b)=>new Date(b.end)-new Date(a.end));
+  }
+  function semesterPlanningSnapshot(now=new Date()){
+    const currentStart=weekStart(now), currentEnd=addDays(currentStart,7);
+    const capacity=Math.max(60,Number(state.semester.availableMinutesPerWeek||840));
+    const dueAssessments=dedupeAssessmentList((state.assessments||[]).filter(a=>a.status!=='done'&&hasValidDate(a.due)&&new Date(a.due)>=currentStart&&new Date(a.due)<currentEnd));
+    const dueWorkload=dueAssessments.reduce((sum,a)=>sum+Math.max(0,Number(a.remaining??a.effort??0)),0);
+    const plannedStudy=(state.events||[]).filter(e=>e.status!=='done'&&['work','study'].includes(e.type)&&hasValidDate(e.start)&&new Date(e.start)>=currentStart&&new Date(e.start)<currentEnd).reduce((sum,e)=>sum+eventMinutes(e),0);
+    const slippedBlocks=canonicalSlippedWork(now);
+    const slippedMinutes=slippedBlocks.reduce((sum,e)=>sum+eventMinutes(e),0);
+    const needsPlanning=planningCandidates({limit:50});
+    const atRisk=dedupeAssessmentList((state.assessments||[]).filter(a=>a.status!=='done'&&deadlineRiskProfile(a).rank>=2));
+    return {
+      now,currentStart,currentEnd,capacity,dueAssessments,dueWorkload,plannedStudy,
+      overCapacity:Math.max(0,plannedStudy-capacity),
+      capacityLeft:Math.max(0,capacity-plannedStudy),
+      slippedBlocks,slippedMinutes,needsPlanning,atRisk
+    };
+  }
+
   function scheduledWorkMinutesForWeek(start=weekStart()){
     const end=addDays(start,7);
     return state.events.filter(e=>e.status!=='done'&&['work','study'].includes(e.type)&&new Date(e.start)>=start&&new Date(e.start)<end)
@@ -255,16 +286,21 @@
   function studentAssistantItems({includeSnoozed=false}={}){
     const prefs=ensureAssistantPrefs(), items=[], now=new Date();
     const severityRank={danger:4,warning:3,neutral:2,info:1,success:0};
-    if(prefs.slippedPlan){
-      const slipped=(state.events||[]).filter(e=>e.type==='work'&&e.status!=='done'&&new Date(e.end)<now);
-      if(slipped.length){
-        const minutes=slipped.reduce((sum,e)=>sum+eventMinutes(e),0);
-        items.push({key:'slipped-plan',kind:'plan',tone:'warning',priority:94,title:`${slipped.length} study block${slipped.length===1?' has':'s have'} slipped`,body:`${formatMinutes(minutes)} was scheduled in the past and is still unfinished. Rebalance only the work that still matters.`,action:'repair',actionLabel:'Review slipped work'});
-      }
+    const snapshot=semesterPlanningSnapshot(now);
+    if(prefs.slippedPlan&&snapshot.slippedBlocks.length){
+      items.push({key:'slipped-plan',kind:'plan',tone:'warning',priority:94,title:`${snapshot.slippedBlocks.length} study block${snapshot.slippedBlocks.length===1?' has':'s have'} slipped`,body:`${formatMinutes(snapshot.slippedMinutes)} was scheduled in the past and is still unfinished. Rebalance only the work that still matters.`,action:'repair',actionLabel:'Review slipped work'});
     }
     if(prefs.deadlineRisk){
-      const deadlines=(state.assessments||[]).filter(a=>a.status!=='done').map(a=>({a,risk:deadlineRiskProfile(a)})).filter(x=>x.risk.rank>=2||new Date(x.a.due)<now).sort((x,y)=>y.risk.rank-x.risk.rank||new Date(x.a.due)-new Date(y.a.due)).slice(0,4);
-      deadlines.forEach(({a,risk})=>{ const c=course(a.courseId), overdue=risk.hours<0; items.push({key:`risk:${a.id}`,kind:'deadline',tone:risk.tone,priority:80+risk.rank*4-Math.min(10,Math.max(0,risk.hours/24)),title:`${a.title}: ${risk.level}`,body:`${risk.reasons.slice(0,2).join(' · ')||risk.primary}. ${formatMinutes(risk.remaining)} remains${risk.unplanned>5?` and ${formatMinutes(risk.unplanned)} is unplanned`:''}.`,meta:`${c?.name||'Course'} · ${humanDue(a.due)}`,action:overdue?'focus':'preview',targetId:a.id,actionLabel:overdue?'Start catch-up':'Review plan'}); });
+      const slippedAssessmentIds=new Set(snapshot.slippedBlocks.map(e=>e.assessmentId).filter(Boolean));
+      const deadlines=(state.assessments||[]).filter(a=>a.status!=='done').map(a=>({a,risk:deadlineRiskProfile(a)})).filter(x=>x.risk.rank>=2||new Date(x.a.due)<now).sort((x,y)=>y.risk.rank-x.risk.rank||new Date(x.a.due)-new Date(y.a.due)).slice(0,6);
+      deadlines.forEach(({a,risk})=>{
+        const c=course(a.courseId), overdue=risk.hours<0;
+        // If the only meaningful warning is already represented by the global
+        // slipped-plan item, avoid repeating the same problem twice.
+        const nonSlipReasons=(risk.reasons||[]).filter(reason=>!/slipped/i.test(reason));
+        if(slippedAssessmentIds.has(a.id)&&risk.rank<=2&&!overdue&&nonSlipReasons.length===0)return;
+        items.push({key:`risk:${a.id}`,kind:'deadline',tone:risk.tone,priority:80+risk.rank*4-Math.min(10,Math.max(0,risk.hours/24)),title:`${a.title}: ${risk.level}`,body:`${(nonSlipReasons.length?nonSlipReasons:risk.reasons).slice(0,2).join(' · ')||risk.primary}. ${formatMinutes(risk.remaining)} remains${risk.unplanned>5?` and ${formatMinutes(risk.unplanned)} is unplanned`:''}.`,meta:`${c?.name||'Course'} · ${humanDue(a.due)}`,action:overdue?'focus':'preview',targetId:a.id,actionLabel:overdue?'Start catch-up':'Review plan'});
+      });
     }
     if(prefs.reviewDue){
       const dueReview=(state.review||[]).filter(r=>!r.due||new Date(`${r.due}T23:59:59`)<=addDays(startOfDay(now),1));
@@ -279,9 +315,9 @@
     }
     if(prefs.dataHealth){
       const health=dataHealthReport();
-      if(!health.clean) items.push({key:'data-health',kind:'reliability',tone:health.repairable?'warning':'neutral',priority:36,title:`${health.total} data consistency issue${health.total===1?'':'s'}`,body:health.repairable?`${health.repairable} can be repaired safely. Student Hub will not delete uncertain cloud-linked records.`:'These need manual review before a demo or migration.',action:'settings',actionLabel:'Open reliability'});
+      if(!health.clean) items.push({key:'data-health',kind:'reliability',tone:health.repairable?'warning':'neutral',priority:36,title:`${health.total} data consistency issue${health.total===1?'':'s'}`,body:health.repairable?`${health.repairable} can be repaired safely. Student Hub will not delete uncertain cloud-linked records.`:'These need manual review before relying on the affected data.',action:'settings',actionLabel:'Open reliability'});
     }
-    if(cloudUser&&!(academicCloudReady&&plannerCloudReady&&knowledgeCloudReady)) items.push({key:'sync-health',kind:'sync',tone:'warning',priority:32,title:'Cloud sync needs attention',body:'One or more data groups are still local. Check diagnostics before relying on another device or giving a live demo.',action:'settings',actionLabel:'Check diagnostics'});
+    if(cloudUser&&!(academicCloudReady&&plannerCloudReady&&knowledgeCloudReady)) items.push({key:'sync-health',kind:'sync',tone:'warning',priority:32,title:'Cloud sync needs attention',body:'One or more data groups are still local. Check diagnostics before relying on another device.',action:'settings',actionLabel:'Check diagnostics'});
     items.sort((a,b)=>(b.priority||severityRank[b.tone]||0)-(a.priority||severityRank[a.tone]||0));
     return includeSnoozed?items:items.filter(item=>!assistantSnoozed(item.key));
   }
@@ -349,11 +385,10 @@
     const actionTitle=actionEvent?(actionIsClass?`${actionEvent.code||actionCourse?.code||'Class'} · ${actionCourse?.name||actionEvent.title||'Course'}`:actionEvent.title):(actionAssessment?.title||'');
     const actionMeta=actionEvent?(actionIsClass?`${fmtTime(actionEvent.start)}–${fmtTime(actionEvent.end)}${actionEvent.room?` · ${actionEvent.room}`:''}`:`${fmtTime(actionEvent.start)}–${fmtTime(actionEvent.end)} · ${eventMinutes(actionEvent)} min planned`):(actionAssessment?`${formatMinutes(Math.min(preferredSessionMinutes(actionAssessment),Math.max(15,actionAssessment.remaining||45)))} focus · ${humanDue(actionAssessment.due)}`:'');
     const dueSoon=dedupeAssessmentList(state.assessments.filter(a=>a.status!=='done'&&new Date(a.due)>=startOfDay(now))).sort((a,b)=>new Date(a.due)-new Date(b.due)).slice(0,4);
-    const needsPlan=planningCandidates({limit:4});
-    const recoveryWindowStart=weekStart(now);
-    const missedBlocks=state.events.filter(e=>e.type==='work'&&e.status!=='done'&&new Date(e.end)<now&&new Date(e.end)>=recoveryWindowStart);
-    const required=requiredMinutesThisWeek(), capacity=Math.max(60,Number(state.semester.availableMinutesPerWeek||840));
-    const over=Math.max(0,required-capacity);
+    const snapshot=semesterPlanningSnapshot(now);
+    const needsPlan=snapshot.needsPlanning.slice(0,4);
+    const missedBlocks=snapshot.slippedBlocks;
+    const required=snapshot.dueWorkload, capacity=snapshot.capacity, over=snapshot.overCapacity;
     const repair=plannerRepairPreview();
     const attention=missedBlocks.length||repair.remove.length||over>0||needsPlan.some(a=>planningState(a).days<=3);
     const planTitle=missedBlocks.length?`${missedBlocks.length} study block${missedBlocks.length===1?'':'s'} slipped`:(over>0?`${formatMinutes(over)} above this week's capacity`:(needsPlan.length?`${needsPlan.length} deadline${needsPlan.length===1?' needs':'s need'} calendar coverage`:'Your plan is on track'));
@@ -374,7 +409,7 @@
         <article class="card today-plan-card ${attention?'attention':'calm'}">
           <div class="today-card-head"><span class="eyebrow">Plan status</span><span class="plan-state-dot">${attention?'!':'✓'}</span></div>
           <h3>${esc(planTitle)}</h3><p>${esc(planCopy)}</p>
-          <div class="today-plan-metrics"><span><strong>${formatMinutes(required)}</strong><small>due workload</small></span><span><strong>${formatMinutes(capacity)}</strong><small>weekly capacity</small></span><span><strong>${needsPlan.length}</strong><small>need planning</small></span></div>
+          <div class="today-plan-metrics"><span><strong>${formatMinutes(required)}</strong><small>due this week</small></span><span><strong>${formatMinutes(snapshot.plannedStudy)}</strong><small>planned this week</small></span><span><strong>${formatMinutes(capacity)}</strong><small>weekly capacity</small></span></div>
           <div class="button-row">${missedBlocks.length||repair.remove.length?`<button class="btn primary" id="reviewPlanRepair">${missedBlocks.length?'Review slipped work':'Repair plan'}</button>`:`<button class="btn ${attention?'primary':'secondary'}" id="smartPlanToday">${attention?'Preview changes':'Check smart plan'}</button>`}<button class="btn secondary" data-route-jump="planner">Open planner</button></div>
         </article>
       </section>
@@ -631,16 +666,15 @@
     const currentStart=weekStart(), currentEnd=addDays(currentStart,7);
     const currentScheduled=scheduledWorkMinutesForWeek(currentStart);
     const currentManual=state.events.filter(e=>e.status!=='done'&&['work','study'].includes(e.type)&&new Date(e.start)>=currentStart&&new Date(e.start)<currentEnd&&!adaptive(e)).sort((a,b)=>new Date(a.start)-new Date(b.start));
-    const manualMissed=currentManual.filter(e=>new Date(e.end)<now);
+    const manualMissed=canonicalSlippedWork(now).filter(e=>!adaptive(e));
     const remove=[...removals.values()];
     const slipped=remove.filter(item=>new Date(item.event.end)<now).length;
     return {mode:'repair',remove,slipped,manual:currentManual,manualMissed,capacity,currentScheduled,overBy:Math.max(0,currentScheduled-capacity),generatedAt:new Date().toISOString()};
   }
   function planHealth(){
     const repair=plannerRepairPreview();
-    const capacity=Math.max(60,Number(state.semester.availableMinutesPerWeek||840));
-    const currentStart=weekStart(), currentScheduled=scheduledWorkMinutesForWeek(currentStart);
-    return {repairCount:repair.remove.length,currentScheduled,capacity,overBy:Math.max(0,currentScheduled-capacity)};
+    const snapshot=semesterPlanningSnapshot();
+    return {repairCount:repair.remove.length,currentScheduled:snapshot.plannedStudy,capacity:snapshot.capacity,overBy:snapshot.overCapacity,slipped:snapshot.slippedBlocks.length};
   }
   function renderPlannerStats(start,end,weeks){
     const due=rangeDueMinutes(start,end), scheduled=rangeMinutes(start,end), capacity=(state.semester.availableMinutesPerWeek||840)*weeks;
@@ -2158,11 +2192,22 @@
     state.timer.seconds=Math.min(45,Math.max(15,a.remaining||25))*60; state.timer.initialSeconds=state.timer.seconds; state.timer.running=false; save(); setRoute('study');
   }
 
+  function assistantGroup(item){
+    if(item.tone==='danger'||item.priority>=90)return 'now';
+    if(item.tone==='warning'||item.priority>=50)return 'attention';
+    return 'later';
+  }
   function renderAssistantPanel(){
     const content=qs('#assistantPanelContent'), count=qs('#assistantPanelCount'); if(!content)return;
     const items=studentAssistantItems();
     if(count)count.textContent=items.length?`${items.length} active`:'All clear';
-    content.innerHTML=items.length?items.map(item=>`<article class="assistant-item ${item.tone}"><div class="assistant-item-copy"><div class="assistant-item-head"><span class="assistant-kind">${esc(item.kind)}</span><button class="assistant-snooze" data-assist-snooze="${esc(item.key)}" title="Snooze for today" aria-label="Snooze this item for today">×</button></div><strong>${esc(item.title)}</strong>${item.meta?`<small>${esc(item.meta)}</small>`:''}<p>${esc(item.body)}</p></div><button class="btn secondary compact-btn" data-assist-action="${esc(item.key)}">${esc(item.actionLabel||'Review')}</button></article>`).join(''):`<div class="assistant-clear"><span>✓</span><h3>Nothing needs attention right now</h3><p>Your deadlines, plan, review queue, Inbox, sync and local data model have no active warnings.</p></div>`;
+    const card=item=>`<article class="assistant-item ${item.tone}"><div class="assistant-item-copy"><div class="assistant-item-head"><span class="assistant-kind">${esc(item.kind)}</span><button class="assistant-snooze" data-assist-snooze="${esc(item.key)}" title="Snooze for today" aria-label="Snooze this item for today">×</button></div><strong>${esc(item.title)}</strong>${item.meta?`<small>${esc(item.meta)}</small>`:''}<p>${esc(item.body)}</p></div><button class="btn secondary compact-btn" data-assist-action="${esc(item.key)}">${esc(item.actionLabel||'Review')}</button></article>`;
+    if(items.length){
+      const groups=[['now','Now'],['attention','Needs attention'],['later','Later']];
+      content.innerHTML=groups.map(([key,label])=>{const groupItems=items.filter(item=>assistantGroup(item)===key);return groupItems.length?`<section class="assistant-group" data-assistant-group="${key}"><header><strong>${label}</strong><span>${groupItems.length}</span></header>${groupItems.map(card).join('')}</section>`:'';}).join('');
+    }else{
+      content.innerHTML=`<div class="assistant-clear"><span>✓</span><h3>Nothing needs attention right now</h3><p>Your deadlines, plan, review queue, Inbox, sync and local data model have no active warnings.</p></div>`;
+    }
     qsa('[data-assist-action]',content).forEach(button=>button.onclick=()=>runAssistantAction(button.dataset.assistAction));
     qsa('[data-assist-snooze]',content).forEach(button=>button.onclick=()=>snoozeAssistantItem(button.dataset.assistSnooze));
   }
@@ -2493,7 +2538,27 @@
     setCloudContext,
     resetUserContext,
     render,
-    toast
+    toast,
+    diagnostics:()=>{
+      const snapshot=semesterPlanningSnapshot();
+      return {
+        route:state.route,
+        courses:state.courses.length,
+        assessments:state.assessments.length,
+        tasks:(state.tasks||[]).length,
+        events:(state.events||[]).length,
+        resources:(state.resources||[]).length,
+        inboxOpen:(state.inbox||[]).filter(i=>!i.processed).length,
+        slippedBlocks:snapshot.slippedBlocks.length,
+        slippedMinutes:snapshot.slippedMinutes,
+        dueWorkload:snapshot.dueWorkload,
+        plannedStudy:snapshot.plannedStudy,
+        capacity:snapshot.capacity,
+        overCapacity:snapshot.overCapacity,
+        assistantItems:studentAssistantItems().map(item=>({key:item.key,group:assistantGroup(item),tone:item.tone,title:item.title})),
+        dataHealth:dataHealthReport()
+      };
+    }
   });
 
   qsa('[data-route]').forEach(b=>b.addEventListener('click',()=>setRoute(b.dataset.route)));

@@ -159,6 +159,7 @@
           <h1 id="pageTitle">Today</h1>
         </div>
         <div class="top-actions">
+          <button class="icon-btn assistant-toggle" id="assistantToggle" aria-label="Open action center" aria-haspopup="dialog" aria-expanded="false"><span aria-hidden="true">◌</span><span id="assistantBadge" class="assistant-badge"></span></button>
           <button class="icon-btn" id="themeToggle" aria-label="Toggle color theme">☾</button>
           <div class="profile-wrap">
             <button class="avatar" id="profileAvatar" aria-label="Open account menu" aria-haspopup="menu">SH</button>
@@ -176,6 +177,15 @@
       </header>
       <section id="page" class="page" aria-live="polite"></section>
     </main>
+
+    <aside class="assistant-panel hidden" id="assistantPanel" role="dialog" aria-modal="false" aria-labelledby="assistantPanelTitle">
+      <div class="assistant-panel-head">
+        <div><span class="eyebrow">Student assistant</span><h2 id="assistantPanelTitle">Action center</h2><p>Only issues that can change what you should do next.</p></div>
+        <button class="icon-btn" id="assistantClose" aria-label="Close action center">×</button>
+      </div>
+      <div class="assistant-panel-status"><span id="assistantPanelCount">All clear</span><button class="text-link" data-route="settings">Preferences</button></div>
+      <div class="assistant-panel-content" id="assistantPanelContent"></div>
+    </aside>
 
     <nav class="mobile-nav" aria-label="Mobile navigation">
       <button data-route="today" class="active"><span>◉</span><small>Today</small></button>

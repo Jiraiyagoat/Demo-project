@@ -133,6 +133,17 @@
     return state.plannerPrefs;
   }
   ensurePlannerPrefs();
+
+  function ensureAssistantPrefs(){
+    const defaults={deadlineRisk:true,slippedPlan:true,reviewDue:true,inbox:true,dataHealth:true,browser:false};
+    if(!state.assistantPrefs||typeof state.assistantPrefs!=='object') state.assistantPrefs={...defaults};
+    state.assistantPrefs={...defaults,...state.assistantPrefs};
+    if(!state.assistantState||typeof state.assistantState!=='object') state.assistantState={snoozed:{},notified:{}};
+    state.assistantState.snoozed=state.assistantState.snoozed&&typeof state.assistantState.snoozed==='object'?state.assistantState.snoozed:{};
+    state.assistantState.notified=state.assistantState.notified&&typeof state.assistantState.notified==='object'?state.assistantState.notified:{};
+    return state.assistantPrefs;
+  }
+  ensureAssistantPrefs();
   canonicalizeStateData();
 
   function save(){
@@ -204,6 +215,77 @@
     if(days<=7) return {key:'needs',label:'Needs plan',tone:'warning',remaining,planned,unscheduled,days};
     return {key:'later',label:'Unscheduled',tone:'neutral',remaining,planned,unscheduled,days};
   }
+  function deadlineRiskProfile(a){
+    const now=new Date(), due=new Date(a?.due);
+    const remaining=Math.max(0,Number(a?.remaining??a?.effort??0));
+    const futureBlocks=(state.events||[]).filter(e=>e.type==='work'&&e.status!=='done'&&e.assessmentId===a?.id&&new Date(e.end)>now&&new Date(e.start)<due);
+    const futurePlanned=futureBlocks.reduce((sum,e)=>sum+eventMinutes(e),0);
+    const slipped=(state.events||[]).filter(e=>e.type==='work'&&e.status!=='done'&&e.assessmentId===a?.id&&new Date(e.end)<=now).reduce((sum,e)=>sum+eventMinutes(e),0);
+    const unplanned=Math.max(0,remaining-futurePlanned);
+    const hours=(due-now)/3600000;
+    const days=Math.max(.25,hours/24);
+    const maxDaily=Math.max(30,Number(state.availability?.maxDailyMinutes||180));
+    const dailyNeed=unplanned/Math.max(1,Math.ceil(days));
+    const coverage=remaining?Math.min(1,futurePlanned/remaining):1;
+    const reasons=[]; let score=0;
+    if(hours<0){score=100;reasons.push('Deadline has passed');}
+    else {
+      if(hours<=24){score+=44;reasons.push('Due within 24 hours');}
+      else if(hours<=48){score+=32;reasons.push('Due within 2 days');}
+      else if(hours<=96){score+=18;reasons.push('Due within 4 days');}
+      if(unplanned>5){
+        if(coverage<.35){score+=30;reasons.push(`${formatMinutes(unplanned)} still has no calendar coverage`);}
+        else if(coverage<.75){score+=18;reasons.push(`Only ${Math.round(coverage*100)}% of remaining work is planned`);}
+      }
+      if(dailyNeed>maxDaily){score+=24;reasons.push(`Needs about ${formatMinutes(dailyNeed)} per day, above your daily limit`);}
+      if(slipped>0){score+=18;reasons.push(`${formatMinutes(slipped)} of planned work has already slipped`);}
+      if(Number(a?.weight||0)>=25){score+=8;reasons.push(`${Number(a.weight)}% course weight`);}
+    }
+    let level='Covered',tone='success',rank=0;
+    if(score>=74){level='Critical',tone='danger',rank=4;}
+    else if(score>=50){level='High risk',tone='danger',rank=3;}
+    else if(score>=28){level='Watch',tone='warning',rank=2;}
+    else if(unplanned>5){level='Needs plan',tone='neutral',rank=1;}
+    const primary=reasons[0]||(unplanned<=5?'Remaining work is covered by future study blocks':`${formatMinutes(unplanned)} is not scheduled yet`);
+    return {score,rank,level,tone,reasons,primary,remaining,futurePlanned,unplanned,slipped,coverage,hours,dailyNeed};
+  }
+
+  function assistantSnoozed(key){ return state.assistantState?.snoozed?.[key]===isoDate(new Date()); }
+  function assistantItemByKey(key){ return studentAssistantItems({includeSnoozed:true}).find(item=>item.key===key)||null; }
+  function studentAssistantItems({includeSnoozed=false}={}){
+    const prefs=ensureAssistantPrefs(), items=[], now=new Date();
+    const severityRank={danger:4,warning:3,neutral:2,info:1,success:0};
+    if(prefs.slippedPlan){
+      const slipped=(state.events||[]).filter(e=>e.type==='work'&&e.status!=='done'&&new Date(e.end)<now);
+      if(slipped.length){
+        const minutes=slipped.reduce((sum,e)=>sum+eventMinutes(e),0);
+        items.push({key:'slipped-plan',kind:'plan',tone:'warning',priority:94,title:`${slipped.length} study block${slipped.length===1?' has':'s have'} slipped`,body:`${formatMinutes(minutes)} was scheduled in the past and is still unfinished. Rebalance only the work that still matters.`,action:'repair',actionLabel:'Review slipped work'});
+      }
+    }
+    if(prefs.deadlineRisk){
+      const deadlines=(state.assessments||[]).filter(a=>a.status!=='done').map(a=>({a,risk:deadlineRiskProfile(a)})).filter(x=>x.risk.rank>=2||new Date(x.a.due)<now).sort((x,y)=>y.risk.rank-x.risk.rank||new Date(x.a.due)-new Date(y.a.due)).slice(0,4);
+      deadlines.forEach(({a,risk})=>{ const c=course(a.courseId), overdue=risk.hours<0; items.push({key:`risk:${a.id}`,kind:'deadline',tone:risk.tone,priority:80+risk.rank*4-Math.min(10,Math.max(0,risk.hours/24)),title:`${a.title}: ${risk.level}`,body:`${risk.reasons.slice(0,2).join(' · ')||risk.primary}. ${formatMinutes(risk.remaining)} remains${risk.unplanned>5?` and ${formatMinutes(risk.unplanned)} is unplanned`:''}.`,meta:`${c?.name||'Course'} · ${humanDue(a.due)}`,action:overdue?'focus':'preview',targetId:a.id,actionLabel:overdue?'Start catch-up':'Review plan'}); });
+    }
+    if(prefs.reviewDue){
+      const dueReview=(state.review||[]).filter(r=>!r.due||new Date(`${r.due}T23:59:59`)<=addDays(startOfDay(now),1));
+      if(dueReview.length){
+        const weakest=[...dueReview].sort((a,b)=>Number(a.mastery||100)-Number(b.mastery||100))[0];
+        items.push({key:'review-due',kind:'review',tone:'info',priority:58,title:`${dueReview.length} review item${dueReview.length===1?' is':'s are'} due`,body:`${weakest?.topic||'A topic'} is the weakest due review at ${Math.round(Number(weakest?.mastery||0))}% mastery. A short retrieval session can keep it from being forgotten.`,action:'review',targetId:weakest?.id||'',actionLabel:'Study this topic'});
+      }
+    }
+    if(prefs.inbox){
+      const open=(state.inbox||[]).filter(i=>!i.processed);
+      if(open.length) items.push({key:'inbox-open',kind:'inbox',tone:'neutral',priority:44,title:`${open.length} Inbox capture${open.length===1?' needs':'s need'} processing`,body:'Turn captured notes into deadlines, resources, or archive them so the semester model stays clean.',action:'inbox',actionLabel:'Process Inbox'});
+    }
+    if(prefs.dataHealth){
+      const health=dataHealthReport();
+      if(!health.clean) items.push({key:'data-health',kind:'reliability',tone:health.repairable?'warning':'neutral',priority:36,title:`${health.total} data consistency issue${health.total===1?'':'s'}`,body:health.repairable?`${health.repairable} can be repaired safely. Student Hub will not delete uncertain cloud-linked records.`:'These need manual review before a demo or migration.',action:'settings',actionLabel:'Open reliability'});
+    }
+    if(cloudUser&&!(academicCloudReady&&plannerCloudReady&&knowledgeCloudReady)) items.push({key:'sync-health',kind:'sync',tone:'warning',priority:32,title:'Cloud sync needs attention',body:'One or more data groups are still local. Check diagnostics before relying on another device or giving a live demo.',action:'settings',actionLabel:'Check diagnostics'});
+    items.sort((a,b)=>(b.priority||severityRank[b.tone]||0)-(a.priority||severityRank[a.tone]||0));
+    return includeSnoozed?items:items.filter(item=>!assistantSnoozed(item.key));
+  }
+
   function planningCandidates({courseId='',limit=50}={}){
     return state.assessments
       .filter(a=>a.status!=='done'&&(!courseId||a.courseId===courseId)&&new Date(a.due)>new Date()&&unscheduledMinutesForAssessment(a)>5)
@@ -228,6 +310,7 @@
   }
 
   function setRoute(route){
+    closeAssistantPanel();
     if(route!=='study'&&focusMode){focusMode=false;document.body.classList.remove('focus-mode');if(document.fullscreenElement&&document.exitFullscreen)document.exitFullscreen().catch(()=>{});}
     state.route=route; activeCourseId=null; save(); render();
   }
@@ -247,6 +330,7 @@
     bindPageEvents();
     updateBadges();
     updateCloudStatusCard();
+    setTimeout(maybeSendBrowserAssistanceNotification,0);
   }
 
   function renderToday(){
@@ -274,6 +358,7 @@
     const attention=missedBlocks.length||repair.remove.length||over>0||needsPlan.some(a=>planningState(a).days<=3);
     const planTitle=missedBlocks.length?`${missedBlocks.length} study block${missedBlocks.length===1?'':'s'} slipped`:(over>0?`${formatMinutes(over)} above this week's capacity`:(needsPlan.length?`${needsPlan.length} deadline${needsPlan.length===1?' needs':'s need'} calendar coverage`:'Your plan is on track'));
     const planCopy=missedBlocks.length?'Review the missed work and rebalance only what still matters.':over>0?'Reduce, move, or defer study work before the week becomes unrealistic.':needsPlan.length?'Smart Plan can place the highest-priority unscheduled work without moving fixed classes.':'Nothing urgent needs replanning right now.';
+    const briefItems=studentAssistantItems().filter(item=>!['sync','data-health'].includes(item.kind)).slice(0,3);
 
     if(!state.courses.length){
       return `<section class="today-empty-start card"><span class="eyebrow">Start here</span><h2>Turn your semester into a plan.</h2><p>Add your first course, set realistic study availability, then import a syllabus. Student Hub will connect deadlines, topics, materials and study time.</p><div class="button-row"><button class="btn primary" id="startOnboarding">Set up semester</button><button class="btn secondary" id="openAddCourse">Add course manually</button></div></section>`;
@@ -294,6 +379,8 @@
         </article>
       </section>
 
+      ${briefItems.length?`<section class="card today-assist-strip"><div class="assist-strip-title"><span class="eyebrow">Proactive brief</span><strong>${briefItems.length} thing${briefItems.length===1?'':'s'} worth attention</strong></div><div class="assist-strip-items">${briefItems.map(item=>`<span class="assist-strip-chip ${item.tone}"><b>${esc(item.title)}</b><small>${esc(item.meta||item.body)}</small></span>`).join('')}</div><button class="btn ghost compact-btn" id="openAssistantToday">Review all</button></section>`:''}
+
       <section class="today-two-column">
         <article class="card today-agenda-card">
           <div class="section-head compact"><div><h2>Today</h2><p>Classes and planned work, in time order.</p></div><button class="btn ghost compact-btn" id="openQuickAddToday">+ Capture</button></div>
@@ -301,7 +388,7 @@
         </article>
         <article class="card today-upcoming-card">
           <div class="section-head compact"><div><h2>Coming up</h2><p>Only the deadlines that deserve attention next.</p></div><button class="btn ghost compact-btn" data-route-jump="planner">See all</button></div>
-          <div class="today-deadline-list">${dueSoon.length?dueSoon.map(a=>{const c=course(a.courseId),ps=planningState(a);return `<button class="today-deadline-row" data-preview-plan="${a.id}"><span class="course-dot" style="--course-color:${c?.color||'var(--accent)'}"></span><div><strong>${esc(a.title)}</strong><small>${esc(c?.name||'Course')} · ${formatMinutes(a.remaining)} left</small></div><span class="today-due ${ps.tone}">${humanDue(a.due)}</span></button>`}).join(''):`<div class="empty-state compact"><p>No upcoming deadlines.</p></div>`}</div>
+          <div class="today-deadline-list">${dueSoon.length?dueSoon.map(a=>{const c=course(a.courseId),ps=planningState(a),risk=deadlineRiskProfile(a);return `<button class="today-deadline-row" data-preview-plan="${a.id}"><span class="course-dot" style="--course-color:${c?.color||'var(--accent)'}"></span><div><strong>${esc(a.title)}</strong><small>${esc(c?.name||'Course')} · ${formatMinutes(a.remaining)} left</small>${risk.rank>=2?`<em class="today-risk-note ${risk.tone}">${esc(risk.level)} · ${esc(risk.primary)}</em>`:''}</div><span class="today-due ${ps.tone}">${humanDue(a.due)}</span></button>`}).join(''):`<div class="empty-state compact"><p>No upcoming deadlines.</p></div>`}</div>
         </article>
       </section>
     `;
@@ -372,7 +459,7 @@
     return state.assessments.filter(a=>plannerDeadlineMatches(a)&&new Date(a.due)>=start&&new Date(a.due)<end).reduce((sum,a)=>sum+Math.max(0,Number(a.remaining??a.effort??0)),0);
   }
   function rangeAtRisk(start,end){
-    return state.assessments.filter(a=>plannerDeadlineMatches(a)&&new Date(a.due)>=start&&new Date(a.due)<end&&['overdue','risk'].includes(planningState(a).key));
+    return state.assessments.filter(a=>plannerDeadlineMatches(a)&&new Date(a.due)>=start&&new Date(a.due)<end&&deadlineRiskProfile(a).rank>=2);
   }
   function topicWeakness(a){
     const topics=new Set((a?.topics||[]).map(x=>String(x).toLowerCase()));
@@ -990,6 +1077,7 @@
       <article class="card setting-card availability-card"><span class="eyebrow">Planning assumptions</span><h3>Study availability</h3><p>Make capacity personal so overload warnings mean something.</p><div class="setting-field-grid"><label><span>Hours / week</span><input id="capacityInput" type="number" min="1" max="80" step=".5" value="${state.semester.availableMinutesPerWeek/60}"/></label><label><span>Max / day (min)</span><input id="maxDailyInput" type="number" min="30" max="600" step="15" value="${availability.maxDailyMinutes||180}"/></label><label><span>Weekday start</span><input id="weekdayStartInput" type="time" value="${esc(availability.weekdayStart||'16:00')}"/></label><label><span>Weekday end</span><input id="weekdayEndInput" type="time" value="${esc(availability.weekdayEnd||'21:00')}"/></label><label><span>Weekend start</span><input id="weekendStartInput" type="time" value="${esc(availability.weekendStart||'10:00')}"/></label><label><span>Weekend end</span><input id="weekendEndInput" type="time" value="${esc(availability.weekendEnd||'18:00')}"/></label></div><label class="setting-check"><input id="weekendsInput" type="checkbox" ${availability.weekends!==false?'checked':''}/><span>Allow weekend study blocks</span></label><small>Smart Plan still respects existing events and deadlines.</small></article>
       <article class="card setting-card"><span class="eyebrow">Academic data</span><h3>Canonical semester model</h3><p>Course → deadline → task → study block is the single planning chain. Materials and topics attach to that context instead of becoming separate systems.</p><div class="settings-metrics"><span><strong>${state.courses.length}</strong><small>courses</small></span><span><strong>${state.assessments.length}</strong><small>deadlines</small></span><span><strong>${uniqueTopics}</strong><small>topics</small></span></div><span class="pill success">Duplicate naming normalized</span></article>
       <article class="card setting-card data-health-card"><span class="eyebrow">Reliability</span><h3>${esc(healthTitle)}</h3><p>${esc(healthCopy)}</p>${health.issues.length?`<div class="health-issue-list">${health.issues.slice(0,4).map(item=>`<span><strong>${item.count}</strong>${esc(item.label)}</span>`).join('')}${health.issues.length>4?`<small>+ ${health.issues.length-4} more issue type${health.issues.length-4===1?'':'s'}</small>`:''}</div>`:`<div class="health-clean-line"><span>✓</span><small>No orphaned planner links, invalid dates or duplicate record IDs detected.</small></div>`}<div class="button-row settings-actions"><button class="btn secondary" id="runDataHealth">${health.repairable?'Run safe repair':'Run consistency check'}</button><button class="btn ghost" id="exportBackup">Export backup</button></div></article>
+      <article class="card setting-card assistant-settings-card"><span class="eyebrow">Student assistant</span><h3>Proactive guidance, without noise</h3><p>Student Hub surfaces only changes that can affect what you should do next. Snoozed items stay quiet for the rest of the day.</p><div class="assistant-pref-list"><label class="setting-check"><input type="checkbox" data-assist-pref="deadlineRisk" ${ensureAssistantPrefs().deadlineRisk?'checked':''}/><span>Deadline-risk explanations</span></label><label class="setting-check"><input type="checkbox" data-assist-pref="slippedPlan" ${ensureAssistantPrefs().slippedPlan?'checked':''}/><span>Slipped-plan recovery</span></label><label class="setting-check"><input type="checkbox" data-assist-pref="reviewDue" ${ensureAssistantPrefs().reviewDue?'checked':''}/><span>Review reminders</span></label><label class="setting-check"><input type="checkbox" data-assist-pref="inbox" ${ensureAssistantPrefs().inbox?'checked':''}/><span>Inbox cleanup reminders</span></label><label class="setting-check"><input type="checkbox" data-assist-pref="dataHealth" ${ensureAssistantPrefs().dataHealth?'checked':''}/><span>Reliability warnings</span></label><label class="setting-check"><input type="checkbox" data-assist-pref="browser" ${ensureAssistantPrefs().browser?'checked':''}/><span>Browser reminders while Student Hub is open</span></label></div><small>Browser reminders are optional and are not background push notifications. They only work while this site is open and your browser permission is granted.</small><div class="button-row settings-actions"><button class="btn secondary" id="openAssistantSettings">Open action center</button></div></article>
       <article class="card setting-card"><span class="eyebrow">Sync</span><h3>${syncReady?'Everything important is synced':'Some data is local'}</h3><p>${syncReady?'Courses, deadlines, plans, materials, Inbox and study history are available across signed-in devices.':'Student Hub will keep working locally where possible, but one or more cloud data groups need attention.'}</p><span class="pill ${syncReady?'success':'warning'}">${syncReady?'Synced':'Check setup'}</span></article>
       <article class="card setting-card"><span class="eyebrow">Onboarding</span><h3>Semester setup</h3><p>Replay the setup guide without deleting existing data.</p><button class="btn secondary" id="restartOnboarding">Open setup guide</button></article>
     </div><details class="card technical-settings"><summary><span>Technical diagnostics</span><small>Appwrite storage, database, Academic AI and local data integrity</small></summary><div class="technical-grid"><div><strong>Academic data</strong><small>${academicCloudReady?'ready':'needs attention'}</small></div><div><strong>Planner data</strong><small>${plannerCloudReady?'ready':'needs attention'}</small></div><div><strong>Knowledge data</strong><small>${knowledgeCloudReady?'ready':'needs attention'}</small></div><div><strong>Private files</strong><small>${window.studentHubCloud?.storage?'ready':'needs attention'}</small></div><div><strong>Academic AI</strong><small>${window.studentHubCloud?.functions?'client ready':'needs attention'}</small></div><div><strong>Data integrity</strong><small>${health.clean?'healthy':`${health.total} issue${health.total===1?'':'s'}`}</small></div></div></details>`;
@@ -997,7 +1085,7 @@
 
   function bindPageEvents(){
     qsa('[data-route-jump]').forEach(b=>b.onclick=()=>setRoute(b.dataset.routeJump));
-    qsa('[data-start-focus]').forEach(b=>b.onclick=()=>{ const a=assessment(b.dataset.startFocus); if(!a)return; state.timer.context={courseId:a.courseId,assessmentId:a.id,topic:a.topics?.[0]||a.title}; state.timer.seconds=Math.min(45,a.remaining||25)*60; state.timer.initialSeconds=state.timer.seconds; state.timer.running=false; save(); setRoute('study'); });
+    qsa('[data-start-focus]').forEach(b=>b.onclick=()=>startFocusForAssessment(b.dataset.startFocus));
     qsa('[data-plan]').forEach(b=>b.onclick=()=>openPlannerPreview({assessmentId:b.dataset.plan}));
     qsa('[data-preview-plan]').forEach(b=>b.onclick=()=>openPlannerPreview({assessmentId:b.dataset.previewPlan}));
     qsa('[data-course]').forEach(b=>b.onclick=()=>{activeCourseId=b.dataset.course; activeCourseTab='overview'; render();});
@@ -1008,6 +1096,8 @@
     qs('#openAddCourse')?.addEventListener('click',openCourseModal);
     qs('#startOnboarding')?.addEventListener('click',()=>openOnboarding(1));
     qs('#openQuickAddToday')?.addEventListener('click',()=>openQuickAdd());
+    qs('#openAssistantToday')?.addEventListener('click',()=>openAssistantPanel());
+    qs('#openAssistantSettings')?.addEventListener('click',()=>openAssistantPanel());
     qs('#autoPlan')?.addEventListener('click',()=>openPlannerPreview({all:true}));
     qs('#smartPlanAll')?.addEventListener('click',()=>openPlannerPreview({all:true}));
     qs('#smartPlanToday')?.addEventListener('click',()=>openPlannerPreview({all:true}));
@@ -1061,6 +1151,16 @@
     qs('#runDataHealth')?.addEventListener('click',repairDataHealth);
     qs('#exportBackup')?.addEventListener('click',exportStudentHubBackup);
     qs('#restartOnboarding')?.addEventListener('click',()=>{state.onboarding={dismissed:false,step:1};save();openOnboarding(1);});
+    qsa('[data-assist-pref]').forEach(input=>input.addEventListener('change',async e=>{
+      const key=e.target.dataset.assistPref, prefs=ensureAssistantPrefs();
+      if(key==='browser'&&e.target.checked){
+        if(!('Notification' in window)){ prefs.browser=false; e.target.checked=false; toast('Browser notifications are not supported here.'); return; }
+        let permission=Notification.permission;
+        if(permission==='default') permission=await Notification.requestPermission();
+        if(permission!=='granted'){ prefs.browser=false; e.target.checked=false; toast('Browser reminder permission was not granted.'); save(); return; }
+      }
+      prefs[key]=Boolean(e.target.checked); save(); render();
+    }));
   }
 
   function taskTemplatesForAssessment(a){
@@ -2052,6 +2152,46 @@
     }
   }
 
+  function startFocusForAssessment(id){
+    const a=assessment(id); if(!a)return;
+    state.timer.context={courseId:a.courseId,assessmentId:a.id,topic:a.topics?.[0]||a.title};
+    state.timer.seconds=Math.min(45,Math.max(15,a.remaining||25))*60; state.timer.initialSeconds=state.timer.seconds; state.timer.running=false; save(); setRoute('study');
+  }
+
+  function renderAssistantPanel(){
+    const content=qs('#assistantPanelContent'), count=qs('#assistantPanelCount'); if(!content)return;
+    const items=studentAssistantItems();
+    if(count)count.textContent=items.length?`${items.length} active`:'All clear';
+    content.innerHTML=items.length?items.map(item=>`<article class="assistant-item ${item.tone}"><div class="assistant-item-copy"><div class="assistant-item-head"><span class="assistant-kind">${esc(item.kind)}</span><button class="assistant-snooze" data-assist-snooze="${esc(item.key)}" title="Snooze for today" aria-label="Snooze this item for today">×</button></div><strong>${esc(item.title)}</strong>${item.meta?`<small>${esc(item.meta)}</small>`:''}<p>${esc(item.body)}</p></div><button class="btn secondary compact-btn" data-assist-action="${esc(item.key)}">${esc(item.actionLabel||'Review')}</button></article>`).join(''):`<div class="assistant-clear"><span>✓</span><h3>Nothing needs attention right now</h3><p>Your deadlines, plan, review queue, Inbox, sync and local data model have no active warnings.</p></div>`;
+    qsa('[data-assist-action]',content).forEach(button=>button.onclick=()=>runAssistantAction(button.dataset.assistAction));
+    qsa('[data-assist-snooze]',content).forEach(button=>button.onclick=()=>snoozeAssistantItem(button.dataset.assistSnooze));
+  }
+  function openAssistantPanel(){
+    renderAssistantPanel();
+    const panel=qs('#assistantPanel'), button=qs('#assistantToggle'); if(!panel)return;
+    panel.classList.remove('hidden'); button?.setAttribute('aria-expanded','true');
+  }
+  function closeAssistantPanel(){ const panel=qs('#assistantPanel'),button=qs('#assistantToggle'); panel?.classList.add('hidden');button?.setAttribute('aria-expanded','false'); }
+  function snoozeAssistantItem(key){ ensureAssistantPrefs(); state.assistantState.snoozed[key]=isoDate(new Date()); save(); renderAssistantPanel(); updateBadges(); toast('Snoozed for today.'); }
+  function runAssistantAction(key){
+    const item=assistantItemByKey(key); if(!item)return; closeAssistantPanel();
+    if(item.action==='repair'){openPlannerRepairPreview();return;}
+    if(item.action==='preview'){openPlannerPreview({assessmentId:item.targetId});return;}
+    if(item.action==='focus'){startFocusForAssessment(item.targetId);return;}
+    if(item.action==='review'){const review=(state.review||[]).find(r=>r.id===item.targetId);if(review){state.timer.context={courseId:review.courseId,assessmentId:'',taskId:'',topic:review.topic||'Review'};state.timer.seconds=15*60;state.timer.initialSeconds=15*60;state.timer.running=false;save();}setRoute('study');return;}
+    if(item.action==='study'){setRoute('study');return;}
+    if(item.action==='inbox'){setRoute('inbox');return;}
+    if(item.action==='settings'){setRoute('settings');return;}
+    if(item.action==='planner'){setRoute('planner');return;}
+  }
+  async function maybeSendBrowserAssistanceNotification(){
+    const prefs=ensureAssistantPrefs();
+    if(!prefs.browser||!('Notification' in window)||Notification.permission!=='granted'||document.visibilityState!=='visible')return;
+    const item=studentAssistantItems().find(x=>x.tone==='danger'||x.priority>=90); if(!item)return;
+    const today=isoDate(new Date()); if(state.assistantState.notified[item.key]===today)return;
+    try{ new Notification(item.title,{body:item.body,tag:`student-hub-${item.key}`}); state.assistantState.notified[item.key]=today; save(); }catch(error){console.warn('Browser reminder failed:',error);}
+  }
+
   function openSearch(){ openModal(qs('#searchModal')); qs('#searchInput').value=''; renderSearch(''); setTimeout(()=>qs('#searchInput').focus(),60); }
   function renderSearch(query){
     const raw=query.trim(), q=raw.toLowerCase(), items=[];
@@ -2073,7 +2213,13 @@
   function formatBytes(bytes=0){ const n=Math.max(0,Number(bytes)||0); if(n<1024)return `${Math.round(n)} B`; if(n<1024*1024)return `${(n/1024).toFixed(1)} KB`; return `${(n/(1024*1024)).toFixed(1)} MB`; }
   function timeAgo(date){ const m=Math.max(0,Math.round((Date.now()-new Date(date))/60000)); if(m<1)return 'just now'; if(m<60)return `${m}m ago`;const h=Math.floor(m/60);if(h<24)return `${h}h ago`;return `${Math.floor(h/24)}d ago`; }
   function toast(msg){ const el=document.createElement('div');el.className='toast';el.textContent=msg;qs('#toastStack').appendChild(el);setTimeout(()=>el.remove(),3200); }
-  function updateBadges(){ const n=state.inbox.filter(i=>!i.processed).length; const b=qs('#inboxBadge'); if(!b)return;b.textContent=n;b.classList.toggle('visible',n>0); }
+  function updateBadges(){
+    const n=(state.inbox||[]).filter(i=>!i.processed).length, inboxBadge=qs('#inboxBadge');
+    if(inboxBadge){inboxBadge.textContent=n;inboxBadge.classList.toggle('visible',n>0);}
+    const attention=studentAssistantItems().length, badge=qs('#assistantBadge');
+    if(badge){badge.textContent=attention>9?'9+':attention;badge.classList.toggle('visible',attention>0);}
+    if(!qs('#assistantPanel')?.classList.contains('hidden'))renderAssistantPanel();
+  }
 
 
   function rowToCourse(row) {
@@ -2321,6 +2467,7 @@
       if (!state.availability || typeof state.availability!=='object') state.availability={weekdayStart:'16:00',weekdayEnd:'21:00',weekendStart:'10:00',weekendEnd:'18:00',maxDailyMinutes:180,weekends:true};
       if (!state.onboarding || typeof state.onboarding!=='object') state.onboarding={dismissed:false,step:1};
       ensurePlannerPrefs();
+      ensureAssistantPrefs();
       canonicalizeStateData();
     }
     if (semesterName) state.semester.name = semesterName;
@@ -2338,6 +2485,7 @@
     activeStorageKey = BASE_STORAGE_KEY;
     state = loadState(activeStorageKey);
     ensurePlannerPrefs();
+    ensureAssistantPrefs();
   }
 
   window.studentHubApp = Object.freeze({
@@ -2353,6 +2501,8 @@
   qs('#openQuickAdd')?.addEventListener('click',()=>openQuickAdd());
   qs('#mobileQuickAdd')?.addEventListener('click',()=>openQuickAdd());
   qs('#openSearch')?.addEventListener('click',openSearch);
+  qs('#assistantToggle')?.addEventListener('click',()=>{ const panel=qs('#assistantPanel'); if(panel?.classList.contains('hidden'))openAssistantPanel(); else closeAssistantPanel(); });
+  qs('#assistantClose')?.addEventListener('click',closeAssistantPanel);
   qs('#dismissOnboarding')?.addEventListener('click',dismissOnboarding);
   qs('#modalBackdrop').addEventListener('click',closeModals);
   qsa('.close-modal').forEach(b=>b.addEventListener('click',closeModals));
@@ -2371,8 +2521,9 @@
   qs('#parseSyllabus').addEventListener('click',()=>{syllabusParsed=parseSyllabusText(qs('#syllabusInput').value);showSyllabusPreview(syllabusParsed);if(!syllabusParsed.length)toast('No dated assessment lines detected.');});
   qs('#confirmSyllabus').addEventListener('click',confirmSyllabus);
   qs('#searchInput').addEventListener('input',e=>renderSearch(e.target.value));
-  document.addEventListener('keydown',e=>{ if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();openSearch();} else if(e.key==='Escape'&&focusMode){focusMode=false;document.body.classList.remove('focus-mode');if(document.fullscreenElement&&document.exitFullscreen)document.exitFullscreen().catch(()=>{});render();} else if(e.key==='Escape')closeModals(); else if(e.key.toLowerCase()==='q'&&!['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName)&&!focusMode){e.preventDefault();openQuickAdd();} });
+  document.addEventListener('keydown',e=>{ if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();openSearch();} else if(e.key==='Escape'&&focusMode){focusMode=false;document.body.classList.remove('focus-mode');if(document.fullscreenElement&&document.exitFullscreen)document.exitFullscreen().catch(()=>{});render();} else if(e.key==='Escape'&&!qs('#assistantPanel')?.classList.contains('hidden'))closeAssistantPanel(); else if(e.key==='Escape')closeModals(); else if(e.key.toLowerCase()==='q'&&!['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName)&&!focusMode){e.preventDefault();openQuickAdd();} });
   document.addEventListener('fullscreenchange',()=>{if(focusMode&&!document.fullscreenElement){focusMode=false;document.body.classList.remove('focus-mode');render();}});
+  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')setTimeout(maybeSendBrowserAssistanceNotification,250);});
 
   window.addEventListener('beforeunload',save);
   if('serviceWorker' in navigator){ window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{})); }

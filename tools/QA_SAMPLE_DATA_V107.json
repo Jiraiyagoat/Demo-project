@@ -1,0 +1,236 @@
+{
+  "version": 1,
+  "createdAt": "2026-09-30T04:07:15.003774+00:00",
+  "route": "today",
+  "theme": "light",
+  "semester": {
+    "name": "QA Semester",
+    "start": "2026-09-30",
+    "availableMinutesPerWeek": 840
+  },
+  "courses": [
+    {
+      "id": "alg",
+      "code": "CS301",
+      "name": "Algorithms",
+      "teacher": "Prof. Kim",
+      "room": "B204",
+      "color": "#7e77ef",
+      "schedule": "Tue / Thu \u00b7 10:00",
+      "grade": 78,
+      "target": 85,
+      "topics": [
+        "Recursion",
+        "Sorting",
+        "Graphs"
+      ]
+    },
+    {
+      "id": "stats",
+      "code": "STAT210",
+      "name": "Statistics",
+      "teacher": "Dr. Park",
+      "room": "C112",
+      "color": "#37a7b7",
+      "schedule": "Mon / Wed \u00b7 14:00",
+      "grade": 82,
+      "target": 88,
+      "topics": [
+        "Probability",
+        "Distributions"
+      ]
+    }
+  ],
+  "assessments": [
+    {
+      "id": "a1",
+      "courseId": "stats",
+      "title": "Problem Set QA",
+      "type": "Assignment",
+      "due": "2026-10-01T23:59:00+00:00",
+      "effort": 180,
+      "remaining": 150,
+      "status": "in_progress",
+      "weight": 10,
+      "topics": [
+        "Probability"
+      ]
+    },
+    {
+      "id": "a2",
+      "courseId": "alg",
+      "title": "Midterm QA",
+      "type": "Exam",
+      "due": "2026-10-05T10:00:00+00:00",
+      "effort": 300,
+      "remaining": 240,
+      "status": "not_started",
+      "weight": 30,
+      "topics": [
+        "Recursion",
+        "Sorting"
+      ]
+    },
+    {
+      "id": "a3",
+      "courseId": "alg",
+      "title": "Project QA",
+      "type": "Project",
+      "due": "2026-10-12T18:00:00+00:00",
+      "effort": 240,
+      "remaining": 240,
+      "status": "not_started",
+      "weight": 20,
+      "topics": [
+        "Graphs"
+      ]
+    }
+  ],
+  "events": [
+    {
+      "id": "fixed1",
+      "courseId": "stats",
+      "title": "Statistics seminar",
+      "type": "fixed",
+      "start": "2026-09-30T14:00:00+00:00",
+      "end": "2026-09-30T15:20:00+00:00",
+      "status": "planned"
+    },
+    {
+      "id": "slip1",
+      "courseId": "stats",
+      "assessmentId": "a1",
+      "taskId": "",
+      "title": "Problem Set QA \u00b7 main work",
+      "type": "work",
+      "start": "2026-09-29T17:00:00+00:00",
+      "end": "2026-09-29T18:00:00+00:00",
+      "status": "planned",
+      "sourceType": "adaptive_planner_v09"
+    },
+    {
+      "id": "slip2",
+      "courseId": "alg",
+      "assessmentId": "a2",
+      "taskId": "",
+      "title": "Midterm QA \u00b7 review",
+      "type": "work",
+      "start": "2026-09-28T18:00:00+00:00",
+      "end": "2026-09-28T18:45:00+00:00",
+      "status": "planned",
+      "sourceType": "adaptive_planner_v09"
+    },
+    {
+      "id": "slip3",
+      "courseId": "alg",
+      "assessmentId": "a2",
+      "taskId": "",
+      "title": "Midterm QA \u00b7 practice",
+      "type": "work",
+      "start": "2026-09-22T18:00:00+00:00",
+      "end": "2026-09-22T18:30:00+00:00",
+      "status": "planned",
+      "sourceType": "adaptive_planner_v09"
+    },
+    {
+      "id": "future1",
+      "courseId": "stats",
+      "assessmentId": "a1",
+      "taskId": "",
+      "title": "Problem Set QA \u00b7 final check",
+      "type": "work",
+      "start": "2026-09-30T18:00:00+00:00",
+      "end": "2026-09-30T18:30:00+00:00",
+      "status": "planned",
+      "sourceType": "adaptive_planner_v09"
+    },
+    {
+      "id": "future2",
+      "courseId": "alg",
+      "assessmentId": "a2",
+      "taskId": "",
+      "title": "Midterm QA \u00b7 practice",
+      "type": "work",
+      "start": "2026-10-02T18:00:00+00:00",
+      "end": "2026-10-02T19:00:00+00:00",
+      "status": "planned",
+      "sourceType": "adaptive_planner_v09"
+    }
+  ],
+  "resources": [
+    {
+      "id": "r1",
+      "courseId": "stats",
+      "topic": "Probability",
+      "type": "Note",
+      "title": "Probability QA notes",
+      "description": "QA resource",
+      "updated": "Today"
+    }
+  ],
+  "inbox": [
+    {
+      "id": "i1",
+      "text": "QA capture to process",
+      "created": "2026-09-30T04:07:15.003774+00:00",
+      "processed": false
+    }
+  ],
+  "tasks": [],
+  "studySessions": [],
+  "review": [
+    {
+      "id": "rv1",
+      "courseId": "stats",
+      "topic": "Probability",
+      "due": "2026-09-30",
+      "mastery": 55
+    }
+  ],
+  "practiceIndex": 0,
+  "timer": {
+    "seconds": 1500,
+    "initialSeconds": 1500,
+    "running": false,
+    "context": {
+      "courseId": "stats",
+      "topic": "Probability"
+    }
+  },
+  "availability": {
+    "weekdayStart": "16:00",
+    "weekdayEnd": "21:00",
+    "weekendStart": "10:00",
+    "weekendEnd": "18:00",
+    "maxDailyMinutes": 180,
+    "weekends": true
+  },
+  "onboarding": {
+    "dismissed": true,
+    "step": 4
+  },
+  "plannerPrefs": {
+    "view": "week",
+    "lens": "plan",
+    "courseId": "all",
+    "assessmentType": "all",
+    "density": "compact",
+    "layers": {
+      "fixed": true,
+      "work": true,
+      "deadlines": true
+    }
+  },
+  "assistantPrefs": {
+    "deadlineRisk": true,
+    "slippedPlan": true,
+    "reviewDue": true,
+    "inbox": true,
+    "dataHealth": true,
+    "browser": false
+  },
+  "assistantState": {
+    "snoozed": {},
+    "notified": {}
+  }
+}

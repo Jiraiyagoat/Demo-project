@@ -1,0 +1,25 @@
+{
+  "passed": 19,
+  "total": 19,
+  "checks": {
+    "app.js syntax": true,
+    "appwrite.js syntax": true,
+    "auth.js syntax": true,
+    "sw.js syntax": true,
+    "canonical getWeekPlanningSummary": true,
+    "semester snapshot consumes canonical week": true,
+    "planner stats consumes canonical week": true,
+    "repair preview consumes canonical week": true,
+    "grades helper exists": true,
+    "grades tab exists": true,
+    "cloud/manual orphan health check": true,
+    "service worker v10-7": true,
+    "cloud reset clean-only mode": true,
+    "cloud QA reset requires RESET": true,
+    "cloud QA reset backup before delete": true,
+    "local QA reset stays local": true,
+    "v1.0.7 local fixture referenced": true,
+    "sample syllabus bundled": true,
+    "sample notes bundled": true
+  }
+}

@@ -180,20 +180,42 @@
       .filter(e=>!e.assessmentId||activeIds.has(e.assessmentId))
       .sort((a,b)=>new Date(b.end)-new Date(a.end));
   }
-  function semesterPlanningSnapshot(now=new Date()){
-    const currentStart=weekStart(now), currentEnd=addDays(currentStart,7);
+  function getWeekPlanningSummary(start=weekStart(), options={}){
+    const rangeStart=startOfDay(start), rangeEnd=addDays(rangeStart,7);
+    const filtered=Boolean(options.filtered);
     const capacity=Math.max(60,Number(state.semester.availableMinutesPerWeek||840));
-    const dueAssessments=dedupeAssessmentList((state.assessments||[]).filter(a=>a.status!=='done'&&hasValidDate(a.due)&&new Date(a.due)>=currentStart&&new Date(a.due)<currentEnd));
+    const dueAssessments=dedupeAssessmentList((state.assessments||[])
+      .filter(a=>a.status!=='done'&&hasValidDate(a.due)&&new Date(a.due)>=rangeStart&&new Date(a.due)<rangeEnd)
+      .filter(a=>!filtered||plannerDeadlineMatches(a)));
+    const plannedEvents=(state.events||[])
+      .filter(e=>e.status!=='done'&&['work','study'].includes(e.type)&&hasValidDate(e.start)&&new Date(e.start)>=rangeStart&&new Date(e.start)<rangeEnd)
+      .filter(e=>{
+        if(!filtered)return true;
+        const prefs=ensurePlannerPrefs();
+        if(prefs.courseId!=='all'&&e.courseId!==prefs.courseId)return false;
+        // Keep orphaned/manual blocks visible in totals. Reliability separately flags
+        // broken links, but silently dropping their minutes made Today and Planner disagree.
+        const linked=e.assessmentId?assessment(e.assessmentId):null;
+        return !linked||plannerAssessmentMatches(linked);
+      });
+    const plannedStudy=plannedEvents.reduce((sum,e)=>sum+eventMinutes(e),0);
     const dueWorkload=dueAssessments.reduce((sum,a)=>sum+Math.max(0,Number(a.remaining??a.effort??0)),0);
-    const plannedStudy=(state.events||[]).filter(e=>e.status!=='done'&&['work','study'].includes(e.type)&&hasValidDate(e.start)&&new Date(e.start)>=currentStart&&new Date(e.start)<currentEnd).reduce((sum,e)=>sum+eventMinutes(e),0);
+    return {
+      start:rangeStart,end:rangeEnd,capacity,dueAssessments,dueWorkload,plannedEvents,plannedStudy,
+      overCapacity:Math.max(0,plannedStudy-capacity),
+      capacityLeft:Math.max(0,capacity-plannedStudy)
+    };
+  }
+  function semesterPlanningSnapshot(now=new Date()){
+    const week=getWeekPlanningSummary(weekStart(now));
+    const currentStart=week.start, currentEnd=week.end;
     const slippedBlocks=canonicalSlippedWork(now);
     const slippedMinutes=slippedBlocks.reduce((sum,e)=>sum+eventMinutes(e),0);
     const needsPlanning=planningCandidates({limit:50});
     const atRisk=dedupeAssessmentList((state.assessments||[]).filter(a=>a.status!=='done'&&deadlineRiskProfile(a).rank>=2));
     return {
-      now,currentStart,currentEnd,capacity,dueAssessments,dueWorkload,plannedStudy,
-      overCapacity:Math.max(0,plannedStudy-capacity),
-      capacityLeft:Math.max(0,capacity-plannedStudy),
+      now,currentStart,currentEnd,capacity:week.capacity,dueAssessments:week.dueAssessments,dueWorkload:week.dueWorkload,plannedStudy:week.plannedStudy,
+      overCapacity:week.overCapacity,capacityLeft:week.capacityLeft,
       slippedBlocks,slippedMinutes,needsPlanning,atRisk
     };
   }
@@ -664,7 +686,7 @@
       }
     }
     const currentStart=weekStart(), currentEnd=addDays(currentStart,7);
-    const currentScheduled=scheduledWorkMinutesForWeek(currentStart);
+    const currentScheduled=getWeekPlanningSummary(currentStart).plannedStudy;
     const currentManual=state.events.filter(e=>e.status!=='done'&&['work','study'].includes(e.type)&&new Date(e.start)>=currentStart&&new Date(e.start)<currentEnd&&!adaptive(e)).sort((a,b)=>new Date(a.start)-new Date(b.start));
     const manualMissed=canonicalSlippedWork(now).filter(e=>!adaptive(e));
     const remove=[...removals.values()];
@@ -677,7 +699,8 @@
     return {repairCount:repair.remove.length,currentScheduled:snapshot.plannedStudy,capacity:snapshot.capacity,overBy:snapshot.overCapacity,slipped:snapshot.slippedBlocks.length};
   }
   function renderPlannerStats(start,end,weeks){
-    const due=rangeDueMinutes(start,end), scheduled=rangeMinutes(start,end), capacity=(state.semester.availableMinutesPerWeek||840)*weeks;
+    const weekSummary=weeks===1?getWeekPlanningSummary(start,{filtered:true}):null;
+    const due=weekSummary?weekSummary.dueWorkload:rangeDueMinutes(start,end), scheduled=weekSummary?weekSummary.plannedStudy:rangeMinutes(start,end), capacity=weekSummary?weekSummary.capacity:(state.semester.availableMinutesPerWeek||840)*weeks;
     const free=capacity-scheduled, risk=rangeAtRisk(start,end).length;
     return `<div class="stat-strip planner-stat-strip">
       <div class="stat"><span>Due workload</span><strong>${formatMinutes(due)}</strong><small>remaining effort due in this view</small></div>
@@ -840,6 +863,18 @@
       return `<article class="card course-card" data-course="${c.id}" style="--course-color:${c.color};--progress:${Math.min(100,c.grade)}%"><span class="pill"><span class="course-dot" style="--course-color:${c.color}"></span> ${esc(c.code)}</span><h3>${esc(c.name)}</h3><p>${esc(c.teacher||'No instructor yet')} · ${esc(c.schedule||'Schedule not set')}</p><div class="progress-track"><span></span></div><div class="course-meta"><span>${c.grade}% current</span><span>${upcoming[0]?`${esc(upcoming[0].title)} · ${humanDue(upcoming[0].due)}`:'No upcoming work'}</span></div></article>`
     }).join('')}</div>`;
   }
+  function renderCourseGrades(c,ass){
+    const current=Math.max(0,Number(c?.grade||0));
+    const target=Math.max(0,Number(c?.target||0));
+    const gap=Math.max(0,Math.round((target-current)*10)/10);
+    const totalWeight=ass.reduce((sum,a)=>sum+Math.max(0,Number(a.weight||0)),0);
+    const done=ass.filter(a=>a.status==='done').length;
+    return `<div class="course-grade-layout">
+      <article class="card course-grade-summary" style="--course-color:${c.color}"><span class="eyebrow">Course grade</span><div class="course-grade-number">${current?`${current}%`:'Not entered'}</div><div class="course-grade-track"><span style="--grade-progress:${Math.min(100,current)}%"></span></div><div class="course-grade-meta"><span><strong>${target?`${target}%`:'—'}</strong><small>target</small></span><span><strong>${gap?`${gap}%`:'0%'}</strong><small>gap to target</small></span><span><strong>${totalWeight?`${totalWeight}%`:'—'}</strong><small>listed weight</small></span><span><strong>${done}/${ass.length}</strong><small>completed items</small></span></div><p>Student Hub stores the course-level grade and target. Individual assessment marks are not invented; add them only when a real grade source is connected.</p></article>
+      <article class="card course-grade-work"><div class="section-head compact"><div><h3>Assessment structure</h3><p>Weights, status and dates from this course.</p></div></div>${ass.length?ass.map(a=>`<div class="grade-assessment-row"><div><strong>${esc(a.title)}</strong><small>${esc(a.type)} · ${esc(a.status.replace('_',' '))}</small></div><div><span>${Number(a.weight||0)?`${Number(a.weight)}%`:'—'}</span><small>${humanDue(a.due)}</small></div></div>`).join(''):`<div class="empty-state compact"><h3>No assessments yet</h3><p>Import a syllabus or add work to populate this view.</p></div>`}</article>
+    </div>`;
+  }
+
   function renderCourseDetail(id){
     const c=course(id); if(!c) return renderCourses();
     const ass=state.assessments.filter(a=>a.courseId===id).sort((a,b)=>new Date(a.due)-new Date(b.due));
@@ -849,7 +884,8 @@
     if(activeCourseTab==='work') body=`<article class="card list-card">${ass.map(a=>`<div class="list-row"><div><strong>${esc(a.title)}</strong><small>${a.type} · ${a.status.replace('_',' ')}</small></div><div class="button-row"><span class="date-chip">${humanDue(a.due)}</span><button class="btn secondary" data-plan="${a.id}">Plan</button></div></div>`).join('')}</article>`;
     if(activeCourseTab==='topics') body=`<div class="course-grid">${dedupeTopics(c.topics).map(t=>{const count=res.filter(r=>String(r.topic||'').toLowerCase()===String(t||'').toLowerCase()).length; const review=state.review.find(r=>r.courseId===id&&r.topic===t);return `<button class="card pad topic-link-card" data-open-library-topic="${esc(t)}" data-open-library-topic-course="${c.id}"><span class="course-dot" style="--course-color:${c.color}"></span><h3 style="margin:15px 0 5px">${esc(t)}</h3><p style="color:var(--muted);font-size:11px">${count} linked resources${review?` · mastery ${review.mastery}%`:''}</p><small>Open materials →</small></button>`}).join('')}</div>`;
     if(activeCourseTab==='materials') body=`<div class="context-toolbar card"><div><span class="eyebrow">Shared Library</span><strong>${esc(c.name)} materials</strong><small>These are the same resources stored in Library, filtered to this course.</small></div><div class="button-row"><button class="btn secondary" data-open-library-course="${c.id}">Open Library</button><button class="btn primary" data-add-resource-course="${c.id}">+ Add material</button></div></div><div class="resource-grid">${res.length?res.map(resourceCard).join(''):`<div class="card empty-state"><div class="empty-icon">▤</div><h3>No materials yet</h3><p>Add one here or from Library. It will appear in both places.</p></div>`}</div>`;
-    return `<button class="btn ghost" id="backCourses">← All courses</button><article class="card course-detail-head" style="--course-color:${c.color};margin-top:10px"><div><span class="pill"><span class="course-dot" style="--course-color:${c.color}"></span> ${esc(c.code)}</span><h2>${esc(c.name)}</h2><p>${esc(c.teacher)} · ${esc(c.room)} · ${esc(c.schedule)}</p></div>${Number(c.grade)>0?`<div><span class="eyebrow">Current grade</span><strong style="display:block;font-size:28px;margin-top:5px">${c.grade}%</strong></div>`:''}</article><div class="detail-tabs">${['overview','work','topics','materials'].map(t=>`<button class="${activeCourseTab===t?'active':''}" data-course-tab="${t}">${t[0].toUpperCase()+t.slice(1)}</button>`).join('')}</div>${body}`;
+    if(activeCourseTab==='grades') body=renderCourseGrades(c,ass);
+    return `<button class="btn ghost" id="backCourses">← All courses</button><article class="card course-detail-head" style="--course-color:${c.color};margin-top:10px"><div><span class="pill"><span class="course-dot" style="--course-color:${c.color}"></span> ${esc(c.code)}</span><h2>${esc(c.name)}</h2><p>${esc(c.teacher)} · ${esc(c.room)} · ${esc(c.schedule)}</p></div>${Number(c.grade)>0?`<div><span class="eyebrow">Current grade</span><strong style="display:block;font-size:28px;margin-top:5px">${c.grade}%</strong></div>`:''}</article><div class="detail-tabs">${['overview','work','topics','materials','grades'].map(t=>`<button class="${activeCourseTab===t?'active':''}" data-course-tab="${t}">${t[0].toUpperCase()+t.slice(1)}</button>`).join('')}</div>${body}`;
   }
 
   const practiceBank=[
@@ -1052,7 +1088,11 @@
     const add=(kind,label,count,repairable=false)=>{if(count>0)issues.push({kind,label,count,repairable});};
     add('links','Deadlines without a valid course',(state.assessments||[]).filter(a=>!courseIds.has(a.courseId)).length,false);
     add('links','Planner tasks without a valid deadline',(state.tasks||[]).filter(t=>!assessmentIds.has(t.assessmentId)).length,true);
-    add('links','Adaptive study blocks without a valid deadline',(state.events||[]).filter(e=>e.type==='work'&&String(e.sourceType||'').startsWith('adaptive_planner')&&e.assessmentId&&!assessmentIds.has(e.assessmentId)).length,true);
+    const orphanWorkBlocks=(state.events||[]).filter(e=>e.type==='work'&&e.assessmentId&&!assessmentIds.has(e.assessmentId));
+    const localAdaptiveOrphans=orphanWorkBlocks.filter(e=>String(e.sourceType||'').startsWith('adaptive_planner')&&!e.cloudId);
+    const reviewOrphans=orphanWorkBlocks.filter(e=>!localAdaptiveOrphans.includes(e));
+    add('links','Local adaptive study blocks without a valid deadline',localAdaptiveOrphans.length,true);
+    add('links','Cloud/manual study blocks without a valid deadline',reviewOrphans.length,false);
     add('links','Materials without a valid course',(state.resources||[]).filter(r=>r.courseId&&!courseIds.has(r.courseId)).length,false);
     add('links','Study sessions without a valid course',(state.studySessions||[]).filter(row=>row.courseId&&!courseIds.has(row.courseId)).length,false);
     add('dates','Deadlines with invalid dates',(state.assessments||[]).filter(a=>!hasValidDate(a.due)).length,false);

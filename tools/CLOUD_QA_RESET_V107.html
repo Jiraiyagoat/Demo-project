@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Student Hub v1.0.7 - Cloud QA reset</title>
+  <style>
+    :root{font-family:Inter,system-ui,sans-serif;color:#161922;background:#f5f6fa}
+    *{box-sizing:border-box}body{margin:0;padding:34px}main{max-width:900px;margin:auto;background:#fff;border:1px solid #dfe3eb;border-radius:22px;padding:28px;box-shadow:0 24px 70px rgba(20,26,40,.08)}
+    h1{margin:0 0 7px;font-size:28px}h2{font-size:16px;margin:22px 0 8px}p,li{color:#667085;line-height:1.55}.danger{border:1px solid #efb9b9;background:#fff7f7;border-radius:14px;padding:13px 15px}.info{border:1px solid #d9def8;background:#f5f6ff;border-radius:14px;padding:13px 15px}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:14px 0}.metric{padding:12px;border:1px solid #e0e4ec;border-radius:12px;background:#fafbfc}.metric strong,.metric small{display:block}.metric strong{font-size:18px}.metric small{font-size:11px;color:#667085;margin-top:3px}.row{display:flex;gap:9px;flex-wrap:wrap;align-items:center;margin-top:14px}button{border:0;border-radius:11px;padding:11px 15px;font-weight:750;cursor:pointer}.primary{background:#161922;color:#fff}.secondary{background:#edf0f5;color:#161922}.danger-btn{background:#b42318;color:#fff}button:disabled{opacity:.45;cursor:not-allowed}input[type=text],select{width:260px;border:1px solid #d7dce5;border-radius:10px;padding:10px 12px;font:inherit;background:#fff;color:#161922}.check{display:flex;align-items:flex-start;gap:8px;color:#667085;font-size:13px}.status{margin-top:16px;padding:12px;border-radius:11px;background:#f7f8fb;white-space:pre-wrap;font:600 12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}.ok{color:#087443}.bad{color:#b42318}code{background:#f0f2f5;border-radius:5px;padding:2px 5px}@media(max-width:700px){body{padding:14px}.grid{grid-template-columns:repeat(2,1fr)}}
+  </style>
+</head>
+<body>
+<main>
+  <h1>Cloud QA reset - v1.0.7</h1>
+  <p>This tool works against the <strong>currently signed-in Student Hub Appwrite account</strong>. It is for a repeatable, realistic end-to-end test workspace - not the local demo fixture.</p>
+  <div class="danger"><strong>Destructive to the active semester.</strong> Reset removes the current semester's courses, assessments, tasks, planner blocks, resources, Inbox items and study sessions, then seeds fresh QA records. It keeps your account and semester row. A JSON metadata backup is downloaded first. Stored PDF/file bytes are deleted only if you explicitly enable that checkbox.</div>
+
+  <h2>1. Inspect</h2>
+  <div class="row"><button class="secondary" id="inspect">Inspect current cloud data</button><button class="secondary" id="backup">Download JSON backup</button></div>
+  <div class="grid" id="metrics"><div class="metric"><strong>-</strong><small>courses</small></div><div class="metric"><strong>-</strong><small>deadlines</small></div><div class="metric"><strong>-</strong><small>tasks</small></div><div class="metric"><strong>-</strong><small>work blocks</small></div></div>
+  <div class="info" id="context">Checking sign-in status...</div>
+
+  <h2>2. Reset and seed</h2>
+  <p>Choose whether to start completely empty for your own real syllabi/files, or seed a realistic QA semester. The QA seed has 4 real cloud courses, recurring schedules, 9 deadlines, planner tasks, future study blocks, one intentionally slipped block, Library notes/links, Inbox captures and study history. Dates are relative to the day you run it.</p>
+  <div class="row"><label>Reset mode: <select id="resetMode"><option value="seed">Clean + seed realistic QA data</option><option value="clean">Clean only - import my own real data</option></select></label></div>
+  <label class="check"><input type="checkbox" id="deleteFiles" /> <span>Also delete linked files from the <code>academic_files</code> bucket. Leave this off if you want to keep uploaded PDFs while replacing database rows.</span></label>
+  <div class="row"><label>Type <strong>RESET</strong>: <input id="confirm" type="text" autocomplete="off" /></label><button class="danger-btn" id="reset" disabled>Backup, clean & seed cloud QA data</button></div>
+  <div class="status" id="status">Waiting.</div>
+
+  <h2>3. Finish the real-path test</h2>
+  <ol>
+    <li>Reload Student Hub. The signed-in app should pull the new Appwrite rows.</li>
+    <li>Use <strong>Courses -> Import syllabus</strong> with <code>tools/test-data/student-hub-sample-syllabus.pdf</code> to test Storage + Academic AI.</li>
+    <li>Test Planner Smart Plan, slipped-work recovery, Study focus selection + Finish & save, Library, Inbox processing, Action Center, and sign-out/sign-in persistence.</li>
+  </ol>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/appwrite@28.1.0/dist/iife/sdk.js"></script>
+<script src="../appwrite.js"></script>
+<script>
+'use strict';
+const $=s=>document.querySelector(s), status=$('#status'), metrics=$('#metrics'), context=$('#context');
+const cloud=window.studentHubCloud;
+let user=null, semester=null, lastSnapshot=null;
+const TABLES=['courses','assessments','tasks','work_blocks','resources','inbox_items','study_sessions'];
+const LABELS={courses:'courses',assessments:'deadlines',tasks:'tasks',work_blocks:'work blocks',resources:'resources',inbox_items:'Inbox items',study_sessions:'study sessions',ai_jobs:'AI jobs'};
+const log=(msg,bad=false)=>{status.textContent=msg;status.className='status '+(bad?'bad':'ok');};
+const isoDate=d=>{const x=new Date(d);return `${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,'0')}-${String(x.getDate()).padStart(2,'0')}`};
+const at=(days,time='12:00')=>{const d=new Date();d.setHours(0,0,0,0);d.setDate(d.getDate()+days);const [h,m]=time.split(':').map(Number);d.setHours(h,m,0,0);return d.toISOString()};
+
+async function listAll(tableId){
+  const rows=[]; let offset=0;
+  while(true){
+    const result=await cloud.tablesDB.listRows({databaseId:cloud.config.databaseId,tableId,queries:[Appwrite.Query.limit(100),Appwrite.Query.offset(offset)]});
+    const batch=Array.isArray(result?.rows)?result.rows:[]; rows.push(...batch); if(batch.length<100)break; offset+=batch.length;
+  }
+  return rows;
+}
+async function rowsForSemester(tableId){
+  try{return (await listAll(tableId)).filter(r=>r.semesterId===semester.$id)}catch(error){if(tableId==='ai_jobs'&&(error?.code===404||/table/i.test(String(error?.message||''))))return [];throw error}
+}
+async function snapshot(){
+  if(!user||!semester)throw new Error('Not signed in. Open Student Hub first and sign in.');
+  const data={exportedAt:new Date().toISOString(),projectId:cloud.config.projectId,user:{id:user.$id,name:user.name||'',email:user.email||''},semester,rows:{}};
+  for(const tableId of [...TABLES,'ai_jobs'])data.rows[tableId]=await rowsForSemester(tableId);
+  return data;
+}
+function downloadJson(data,name){const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500)}
+function showMetrics(data){const r=data.rows;metrics.innerHTML=['courses','assessments','tasks','work_blocks'].map(k=>`<div class="metric"><strong>${r[k]?.length||0}</strong><small>${LABELS[k]}</small></div>`).join('')}
+async function inspect(){log('Reading Appwrite rows...');lastSnapshot=await snapshot();showMetrics(lastSnapshot);log('Cloud workspace inspected successfully.');return lastSnapshot}
+async function backup(){const data=await inspect();downloadJson(data,`student-hub-cloud-backup-${isoDate(new Date())}.json`);log('Backup downloaded. Keep it until QA is finished.');return data}
+
+async function deleteCurrentSemester(deleteFiles){
+  const snap=lastSnapshot||await snapshot();
+  if(deleteFiles){
+    for(const row of snap.rows.resources||[]){if(row.storageFileId){try{await cloud.deleteAcademicFile(row.storageFileId)}catch(error){console.warn('Could not delete file',row.storageFileId,error)}}}
+  }
+  const order=['ai_jobs','work_blocks','tasks','study_sessions','inbox_items','resources','assessments','courses'];
+  for(const tableId of order){
+    for(const row of snap.rows[tableId]||[]){await cloud.tablesDB.deleteRow({databaseId:cloud.config.databaseId,tableId,rowId:row.$id})}
+  }
+}
+
+async function seedRealisticWorkspace(){
+  const courseDefs=[
+    {legacyId:'qa-cs301',code:'CS301',name:'Algorithms',teacher:'Prof. Kim',room:'B204',color:'#7e77ef',schedule:'Tue / Thu · 10:00-11:20',grade:78,target:85,topics:['Recursion','Sorting','Graphs','Dynamic Programming']},
+    {legacyId:'qa-stat210',code:'STAT210',name:'Statistics',teacher:'Dr. Park',room:'C112',color:'#37a7b7',schedule:'Mon / Wed · 14:00-15:20',grade:82.4,target:88,topics:['Probability','Distributions','Hypothesis Testing','Regression']},
+    {legacyId:'qa-chem114',code:'CHEM114',name:'Chemistry',teacher:'Prof. Lee',room:'Lab 3',color:'#d79036',schedule:'Mon / Fri · 10:00-11:20',grade:84,target:88,topics:['Acids & Bases','Equilibrium','Thermodynamics','Kinetics']},
+    {legacyId:'qa-math210',code:'MATH210',name:'Linear Algebra',teacher:'Dr. Smith',room:'A104',color:'#6d63ed',schedule:'Mon / Wed · 12:00-13:20',grade:76,target:86,topics:['Matrices','Gaussian elimination','Vector spaces','Linear independence','Basis and dimension','Determinants','Eigenvalues and eigenvectors','Diagonalization']}
+  ];
+  const courseMap={};
+  for(const c of courseDefs){const row=await cloud.createCourse(user,semester,c,c.legacyId);courseMap[c.legacyId]=row.$id}
+  const defs=[
+    {legacyId:'qa-ps2',course:'qa-stat210',title:'Problem Set 2',type:'Assignment',due:at(1,'23:59'),effort:150,remaining:85,status:'in_progress',weight:8,topics:['Probability']},
+    {legacyId:'qa-lab',course:'qa-chem114',title:'Lab Report',type:'Assignment',due:at(2,'18:00'),effort:180,remaining:160,status:'in_progress',weight:10,topics:['Equilibrium']},
+    {legacyId:'qa-hw1',course:'qa-math210',title:'Homework 1',type:'Assignment',due:at(4,'20:00'),effort:120,remaining:100,status:'not_started',weight:10,topics:['Matrices','Gaussian elimination']},
+    {legacyId:'qa-midterm-alg',course:'qa-cs301',title:'Midterm Exam',type:'Exam',due:at(8,'10:00'),effort:360,remaining:300,status:'not_started',weight:25,topics:['Recursion','Sorting','Graphs']},
+    {legacyId:'qa-quiz-math',course:'qa-math210',title:'Quiz 1',type:'Quiz',due:at(11,'12:00'),effort:75,remaining:75,status:'not_started',weight:10,topics:['Vector spaces','Linear independence']},
+    {legacyId:'qa-project-alg',course:'qa-cs301',title:'Project Proposal',type:'Project',due:at(15,'18:00'),effort:240,remaining:220,status:'not_started',weight:20,topics:['Graphs','Dynamic Programming']},
+    {legacyId:'qa-midterm-stats',course:'qa-stat210',title:'Midterm Exam',type:'Exam',due:at(20,'10:00'),effort:300,remaining:300,status:'not_started',weight:30,topics:['Probability','Distributions','Hypothesis Testing']},
+    {legacyId:'qa-chem-quiz',course:'qa-chem114',title:'Equilibrium Quiz',type:'Quiz',due:at(24,'14:00'),effort:90,remaining:90,status:'not_started',weight:8,topics:['Equilibrium']},
+    {legacyId:'qa-final-math',course:'qa-math210',title:'Final Exam',type:'Exam',due:at(35,'10:00'),effort:420,remaining:420,status:'not_started',weight:35,topics:['Matrices','Vector spaces','Eigenvalues and eigenvectors','Diagonalization']}
+  ];
+  const assessmentMap={};
+  for(const a of defs){const payload={...a,courseId:courseMap[a.course]};delete payload.course;const row=await cloud.createAssessment(user,semester,payload,payload.courseId,a.legacyId);assessmentMap[a.legacyId]=row.$id}
+  const taskDefs=[
+    ['qa-ps2','Understand requirements',25],['qa-ps2','Complete main work',45],['qa-ps2','Check + revise',15],
+    ['qa-lab','Finish analysis',70],['qa-lab','Write discussion',60],['qa-lab','Final check',30],
+    ['qa-hw1','Solve core problems',70],['qa-hw1','Review answers',30],
+    ['qa-midterm-alg','Review covered concepts',120],['qa-midterm-alg','Practice problems',120],['qa-midterm-alg','Final recall check',60]
+  ];
+  const taskRows=[];
+  for(let i=0;i<taskDefs.length;i++){
+    const [aKey,title,mins]=taskDefs[i], a=defs.find(x=>x.legacyId===aKey);
+    taskRows.push(await cloud.createTask(user,semester,{courseId:courseMap[a.course],assessmentId:assessmentMap[aKey],title,estimate:mins,remaining:mins,status:'not_started',position:i,sourceType:'planner'},`qa-task-${i+1}`));
+  }
+  const taskFor=(assessmentKey,title)=>taskRows.find(t=>t.assessmentId===assessmentMap[assessmentKey]&&t.title===title);
+  const blocks=[
+    ['qa-ps2','Complete main work',-1,'17:00','18:00'],
+    ['qa-ps2','Complete main work',0,'17:00','17:45'],
+    ['qa-lab','Finish analysis',0,'18:00','19:00'],
+    ['qa-hw1','Solve core problems',1,'17:00','18:00'],
+    ['qa-midterm-alg','Review covered concepts',1,'18:15','19:15'],
+    ['qa-lab','Write discussion',2,'18:00','19:00'],
+    ['qa-midterm-alg','Practice problems',3,'17:00','18:00'],
+    ['qa-hw1','Review answers',3,'18:15','18:45']
+  ];
+  for(let i=0;i<blocks.length;i++){
+    const [aKey,title,day,start,end]=blocks[i], a=defs.find(x=>x.legacyId===aKey), task=taskFor(aKey,title);
+    await cloud.createWorkBlock(user,semester,{courseId:courseMap[a.course],assessmentId:assessmentMap[aKey],taskId:task?.$id||'',title:`${a.title} · ${title}`,start:at(day,start),end:at(day,end),status:'planned',sourceType:'adaptive_planner_v09'},`qa-block-${i+1}`);
+  }
+  const resources=[
+    {course:'qa-stat210',topic:'Probability',type:'Note',title:'Probability cheat sheet',description:'Personal formulas and examples for conditional probability and Bayes rule.'},
+    {course:'qa-cs301',topic:'Recursion',type:'Note',title:'Recursion review',description:'Base cases, recurrence thinking and complexity reminders.'},
+    {course:'qa-chem114',topic:'Equilibrium',type:'Note',title:'Equilibrium lab notes',description:'Observations, equilibrium shifts and discussion prompts.'},
+    {course:'qa-math210',topic:'Eigenvalues and eigenvectors',type:'Link',title:'Eigenvalue practice',description:'External practice reference.',url:'https://en.wikipedia.org/wiki/Eigenvalues_and_eigenvectors'},
+    {course:'qa-stat210',topic:'Distributions',type:'Link',title:'Statistics practice',description:'External statistics learning resource.',url:'https://www.khanacademy.org/math/statistics-probability'},
+    {course:'qa-cs301',topic:'Graphs',type:'Link',title:'Graph algorithms reference',description:'External reference for graph concepts.',url:'https://en.wikipedia.org/wiki/Graph_theory'}
+  ];
+  for(let i=0;i<resources.length;i++){const r={...resources[i],courseId:courseMap[resources[i].course],sourceType:'qa_seed'};delete r.course;await cloud.createResource(user,semester,r,`qa-resource-${i+1}`)}
+  await cloud.createInboxItem(user,semester,{text:'Professor said the next quiz covers vector spaces and linear independence.',processed:false,sourceType:'capture'},'qa-inbox-1');
+  await cloud.createInboxItem(user,semester,{text:'Check whether Lab Report discussion needs uncertainty analysis.',processed:false,sourceType:'capture'},'qa-inbox-2');
+  const sessions=[
+    ['qa-stat210','qa-ps2','Probability',35,-6],['qa-cs301','qa-midterm-alg','Recursion',45,-4],['qa-math210','qa-hw1','Matrices',30,-3],['qa-chem114','qa-lab','Equilibrium',40,-2]
+  ];
+  for(let i=0;i<sessions.length;i++){const [cKey,aKey,topic,minutes,day]=sessions[i];await cloud.createStudySession(user,semester,{courseId:courseMap[cKey],assessmentId:assessmentMap[aKey],topic,minutes,completedAt:at(day,'19:00'),sourceType:'focus'},`qa-session-${i+1}`)}
+  localStorage.removeItem(`studentHubDemo.v1.${user.$id}`);
+}
+
+async function init(){
+  try{user=await cloud.getCurrentUser();if(!user)throw new Error('No Appwrite session found. Sign in to Student Hub in this browser, then reopen this page.');semester=await cloud.ensureSemester(user);context.innerHTML=`Signed in as <strong>${user.name||user.email}</strong>. Active semester: <strong>${semester.name}</strong> (<code>${semester.$id}</code>).`;context.className='info';await inspect()}catch(error){context.textContent=error.message;context.className='danger';log(error.message,true)}
+}
+$('#inspect').onclick=()=>inspect().catch(e=>log(e.message,true));
+$('#backup').onclick=()=>backup().catch(e=>log(e.message,true));
+const syncResetLabel=()=>{$('#reset').textContent=$('#resetMode').value==='clean'?'Backup & clean cloud semester':'Backup, clean & seed cloud QA data'};
+$('#resetMode').onchange=syncResetLabel;syncResetLabel();
+$('#confirm').oninput=e=>$('#reset').disabled=e.target.value.trim()!=='RESET'||!user||!semester;
+$('#reset').onclick=async()=>{
+  if($('#confirm').value.trim()!=='RESET')return;
+  $('#reset').disabled=true;$('#inspect').disabled=true;$('#backup').disabled=true;
+  try{
+    log('1/4 Creating metadata backup...');lastSnapshot=await snapshot();downloadJson(lastSnapshot,`student-hub-cloud-backup-before-reset-${isoDate(new Date())}.json`);
+    log('2/4 Cleaning current semester cloud rows...');await deleteCurrentSemester($('#deleteFiles').checked);
+    const mode=$('#resetMode').value;
+    if(mode==='seed'){log('3/4 Seeding realistic cloud QA dataset...');lastSnapshot=null;await seedRealisticWorkspace();}
+    else{log('3/4 Leaving the active semester empty for your own real inputs...');localStorage.removeItem(`studentHubDemo.v1.${user.$id}`);lastSnapshot=null;}
+    log('4/4 Verifying cloud rows...');const fresh=await snapshot();showMetrics(fresh);lastSnapshot=fresh;
+    log(mode==='seed'?'Cloud QA reset complete. Reload Student Hub now. Then upload the included sample syllabus PDF to exercise Storage + Academic AI.':'Cloud semester is clean. Reload Student Hub, then add/import your real courses, syllabi, files and deadlines through the normal UI.');
+    $('#confirm').value='';
+  }catch(error){console.error(error);log(`Reset stopped: ${error.message}\nYour pre-reset JSON backup was downloaded before deletion began.`,true)}finally{$('#inspect').disabled=false;$('#backup').disabled=false;$('#reset').disabled=$('#confirm').value.trim()!=='RESET'}
+};
+init();
+</script>
+</body>
+</html>

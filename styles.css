@@ -942,3 +942,18 @@ body.focus-mode .focus-mode-button{display:inline-flex!important}
 .assistant-group>header span{min-width:19px;height:19px;padding:0 6px;border-radius:999px;display:grid;place-items:center;background:var(--panel-soft);border:1px solid var(--line);font-size:7px;font-weight:850;letter-spacing:0;color:var(--muted)}
 .assistant-group[data-assistant-group="now"]>header strong{color:var(--danger)}
 .assistant-group[data-assistant-group="attention"]>header strong{color:var(--warning)}
+
+/* v1.0.7 - canonical planning totals + course grades */
+.course-grade-layout{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr);gap:16px;align-items:start}
+.course-grade-summary,.course-grade-work{padding:18px}
+.course-grade-number{font-size:42px;font-weight:800;letter-spacing:-.055em;margin:8px 0 10px}
+.course-grade-track{height:8px;border-radius:999px;background:var(--panel-soft);overflow:hidden;border:1px solid var(--line)}
+.course-grade-track>span{display:block;width:var(--grade-progress,0%);height:100%;background:var(--course-color,var(--accent));border-radius:inherit}
+.course-grade-meta{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:14px 0}
+.course-grade-meta>span{border:1px solid var(--line);background:var(--panel-soft);border-radius:11px;padding:10px;min-width:0}
+.course-grade-meta strong,.course-grade-meta small{display:block}.course-grade-meta strong{font-size:13px}.course-grade-meta small{font-size:7px;color:var(--muted);margin-top:2px;text-transform:uppercase;letter-spacing:.05em}
+.course-grade-summary>p{margin:0;color:var(--muted);font-size:8px;line-height:1.5}
+.course-grade-work .section-head{margin:0 0 8px}.course-grade-work .section-head h3{margin:0}.course-grade-work .section-head p{margin-top:3px}
+.grade-assessment-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center;padding:11px 0;border-top:1px solid var(--line)}
+.grade-assessment-row:first-of-type{border-top:0}.grade-assessment-row strong,.grade-assessment-row small{display:block}.grade-assessment-row strong{font-size:10px}.grade-assessment-row small{font-size:8px;color:var(--muted);margin-top:2px}.grade-assessment-row>div:last-child{text-align:right}.grade-assessment-row>div:last-child>span{display:block;font-size:11px;font-weight:800}
+@media(max-width:900px){.course-grade-layout{grid-template-columns:1fr}.course-grade-meta{grid-template-columns:repeat(2,minmax(0,1fr))}}
